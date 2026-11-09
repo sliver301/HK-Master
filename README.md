@@ -34,6 +34,7 @@ Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 | 📂 **Folders** | **Shift + Back** goes up one folder in File Explorer and in any app's Open/Save dialog. |
 | 🔊 **Media control** | Hold **Caps Lock** (or Right Alt, Right Ctrl, Menu key, Scroll Lock) + **wheel** for volume, **+ middle click** for play/pause, **+ side buttons** for next/previous track. |
 | 🔠 **Caps Lock guard** | Caps Lock alone does nothing; **Shift + Caps Lock** turns it on and off. No more ACCIDENTAL CAPS. |
+| 🔄 **Auto-update** | Checks GitHub once a day and updates itself in one click. You can turn it off, or check by hand, in *General › Updates*. |
 | ⌨️ **Text shortcuts** | Type a short code like `@@` and get your full email address, phone number or any text. |
 
 Everything can be switched on/off and changed in the settings window (**Ctrl + Alt + H**, or double-click the tray icon). Light and dark themes included.

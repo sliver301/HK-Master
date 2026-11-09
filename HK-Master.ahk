@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.0
+;@Ahk2Exe-SetVersion 2.1.1
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,12 +29,41 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.0"
+global APP_VERSION := "2.1.1"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
+global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
+global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
+global UPD_BUSY := false
+; Second step of an update: the new exe (downloaded to Temp) was started as
+;   new.exe /update "<path of the old exe>"
+; It waits until the old one has exited, copies itself over it, starts it and quits.
+if A_IsCompiled && A_Args.Length >= 2 && A_Args[1] = "/update" {
+    ok := false
+    Loop 50 {                                  ; up to 10 s for the old copy to close
+        try {
+            FileCopy(A_ScriptFullPath, A_Args[2], 1)
+            ok := true
+            break
+        }
+        Sleep 200
+    }
+    if ok
+        Run('"' A_Args[2] '" /updated')
+    else
+        MsgBox("Could not update " A_Args[2] ".`nPlease download it again from GitHub.", "HK-Master", "Icon!")
+    ExitApp
+}
+global UPDATED := false                        ; just updated: tray only, say so
 ; Started by Windows at logon (the Run entry adds /startup): stay in the tray, no window.
 global STARTUP_MODE := false
-for arg in A_Args
+for arg in A_Args {
     if arg = "/startup"
         STARTUP_MODE := true
+    if arg = "/updated"
+        UPDATED := true
+}
+Loop Files A_Temp "\HK-Master-*.exe"            ; leftover update downloads
+    try FileDelete(A_LoopFileFullPath)
 ; "Uninstall" in Windows Settings > Apps starts the installed exe with /uninstall.
 if A_IsCompiled && A_Args.Length && A_Args[1] = "/uninstall" {
     UninstallApp(true)
@@ -87,7 +116,7 @@ if !FileExist(INI) || IniRead(INI, "General", "ConfigVersion", 1) < 3
     SaveConfig(cfg)
 
 ; A reload (after Save, Import or tray Reload) must not ask to install again.
-global RELOADED := IniRead(INI, "State", "Reloaded", 0) = 1 || IniRead(INI, "State", "JustSaved", 0) = 1
+global RELOADED := UPDATED || IniRead(INI, "State", "Reloaded", 0) = 1 || IniRead(INI, "State", "JustSaved", 0) = 1
 if RELOADED
     try IniDelete(INI, "State", "Reloaded")
 try IniDelete(INI, "State", "Reopen")       ; left by an older version
@@ -106,6 +135,12 @@ if IniRead(INI, "State", "JustSaved", 0) = 1 {
     try IniDelete(INI, "State", "JustSaved")
     TrayTip("Settings saved and applied.", APP_NAME, "Iconi Mute")
 }
+
+if UPDATED
+    TrayTip("Updated to version " APP_VERSION ".", APP_NAME, "Iconi Mute")
+; Look for a new version 30 s after start, then every 6 hours (at most once a day, see AutoUpdateCheck).
+SetTimer(AutoUpdateCheck, -30000)
+SetTimer(AutoUpdateCheck, 6 * 3600 * 1000)
 
 ; Opened by the user: show the settings window. Opened by Windows at logon (or restarted): tray only.
 if !STARTUP_MODE && !RELOADED
@@ -350,6 +385,8 @@ FastScrollAllowed() {
         return false
     try {
         MouseGetPos(, , &win, &ctl, 2)
+        if ctl && SLIDERS.Has(ctl)      ; our own sliders: Shift + wheel moves them like the plain wheel (SliderWheel)
+            return false
         return !OverCanvas(win, ctl)
     }
     return false
@@ -415,6 +452,10 @@ FS_Wheel(delta) {
             return
         }
     }
+    if NeedsRealWheel(ctl ? ctl : win) {
+        RealWheel(delta, "WheelUp", "WheelDown")
+        return
+    }
     wp := (delta & 0xFFFF) << 16              ; high word = wheel delta, low word = no Shift/Ctrl
     lp := ((y & 0xFFFF) << 16) | (x & 0xFFFF)
     ; Wait (max 60 ms) for the app to finish this step before the next one, so a slow app is
@@ -424,6 +465,29 @@ FS_Wheel(delta) {
         , "UInt", 0x2, "UInt", 60, "UPtr*", &r)   ; 0x2 = SMTO_ABORTIFHUNG
     if !ok
         FS_Stop()
+}
+
+; WinUI 3 apps (WhatsApp desktop, seen in the debug log as WhatsApp.Root.exe with
+; "Microsoft.UI.Content.DesktopChildSiteBridge" under the mouse) read the wheel from the real
+; input stream, so a posted wheel message does nothing there. They get real wheel input instead.
+NeedsRealWheel(hwnd) {
+    try return InStr(WinGetClass(hwnd), "Microsoft.UI.Content.") = 1
+    return false
+}
+
+; Real wheel input, whole notches only (sub-notch steps are saved up until they make a notch).
+; AutoHotkey's own Send is used on purpose: its input is ignored by this script's hotkeys (so the
+; glide can't feed itself, the old freeze), and it lifts the held Shift around the wheel so the
+; app scrolls vertically instead of sideways.
+RealWheel(delta, upKey, downKey) {
+    static acc := 0
+    acc += delta
+    n := Integer(acc / 120)
+    if !n
+        return
+    acc -= n * 120
+    SendLevel 0
+    Send "{" (n > 0 ? upKey : downKey) " " Abs(n) "}"
 }
 
 ; Horizontal scroll by one notch. Controls with a horizontal scroll bar (classic lists,
@@ -445,6 +509,10 @@ HScroll(dir) {
         if h = win
             break
         h := DllCall("GetParent", "Ptr", h, "Ptr")
+    }
+    if NeedsRealWheel(ctl ? ctl : win) {
+        RealWheel(dir * 120, "WheelRight", "WheelLeft")
+        return
     }
     wp := ((dir * 120) & 0xFFFF) << 16
     lp := ((y & 0xFFFF) << 16) | (x & 0xFFFF)
@@ -732,6 +800,7 @@ SetupTray() {
     m.Delete()
     m.Add("Settings...`tCtrl+Alt+H", ShowSettings)
     m.Add("Pause all shortcuts", TogglePause)
+    m.Add("Check for updates", (*) => CheckForUpdates(true))
     m.Add()
     m.Add("Restart app", AppReload)
     m.Add("Exit", (*) => ExitApp())
@@ -913,6 +982,13 @@ ShowSettings(*) {
     SecHeader(g, "x20 y430 w400", "Settings file")
     Muted(g.AddText("x20 y460 w800", INI))
     AddBtn(g, "x20 y486 w140", "Open folder").OnEvent("Click", (*) => Run('"' DATA_DIR '"'))
+    SecHeader(g, "x460 y58 w370", "Updates")
+    g.AddText("x460 y92 w370", "Version " APP_VERSION)
+    autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
+        , (*) => IniWrite(autoUpd.Value ? 1 : 0, INI, "General", "AutoUpdate"))      ; takes effect at once
+    updBtn := AddBtn(g, "x460 y152 w140", "Check now")
+    updBtn.OnEvent("Click", (*) => CheckForUpdates(true))
+    AddBtn(g, "x+8 w140", "Release notes").OnEvent("Click", (*) => Run(RELEASES_URL))
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1948,6 +2024,115 @@ InstallApp(startup := true) {
         try FileCreateShortcut(INSTALL_EXE, A_Programs "\" APP_NAME ".lnk", INSTALL_DIR, , APP_NAME)
     }
     Run('"' INSTALL_EXE '"', INSTALL_DIR)
+    ExitApp
+}
+
+; =============================================================================
+;  Updates (GitHub releases)
+; =============================================================================
+; Automatic check: on unless [General] AutoUpdate=0, at most once a day ([State] LastUpdateCheck).
+AutoUpdateCheck() {
+    if IniRead(INI, "General", "AutoUpdate", 1) != 1
+        return
+    last := IniRead(INI, "State", "LastUpdateCheck", "")
+    try {
+        if last != "" && DateDiff(A_Now, last, "Hours") < 24
+            return
+    }
+    CheckForUpdates(false)
+}
+
+; Asks GitHub for the latest release without freezing the shortcuts (the request runs in the
+; background and a timer waits for it). manual: also say "up to date" / "could not check".
+CheckForUpdates(manual := false) {
+    global UPD_BUSY
+    if UPD_BUSY
+        return
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("GET", UPDATE_API, true)
+        whr.SetRequestHeader("User-Agent", APP_NAME)
+        whr.SetRequestHeader("Accept", "application/vnd.github+json")
+        whr.Send()
+    } catch {
+        if manual
+            MsgBox("Could not check for updates.`nAre you online?", APP_NAME, "Icon!")
+        return
+    }
+    UPD_BUSY := true
+    t0 := A_TickCount
+    SetTimer(Poll, 250)
+
+    Poll() {
+        global UPD_BUSY
+        done := false
+        try done := whr.WaitForResponse(0)
+        if !done {
+            if A_TickCount - t0 < 20000
+                return
+            SetTimer(Poll, 0)
+            UPD_BUSY := false
+            if manual
+                MsgBox("Could not reach GitHub.`nAre you online?", APP_NAME, "Icon!")
+            return
+        }
+        SetTimer(Poll, 0)
+        UPD_BUSY := false
+        st := 0, body := ""
+        try {
+            st := whr.Status
+            body := whr.ResponseText
+        }
+        if st != 200 || !RegExMatch(body, '"tag_name"\s*:\s*"v?([^"]+)"', &m) {
+            if manual
+                MsgBox("Could not check for updates (GitHub answered " st ").", APP_NAME, "Icon!")
+            return
+        }
+        IniWrite(A_Now, INI, "State", "LastUpdateCheck")
+        latest := m[1]
+        newer := false
+        try newer := VerCompare(latest, APP_VERSION) > 0
+        if !newer {
+            if manual
+                MsgBox("You have the latest version (" APP_VERSION ").", APP_NAME, "Iconi")
+            return
+        }
+        url := RegExMatch(body, '"browser_download_url"\s*:\s*"([^"]*/HK-Master[^"/]*\.exe)"', &u) ? u[1] : ""
+        OfferUpdate(latest, url)
+    }
+}
+
+OfferUpdate(latest, url) {
+    if MsgBox(APP_NAME " " latest " is available (you have " APP_VERSION ").`n`nUpdate now?"
+        , APP_NAME " update", "YesNo Iconi") != "Yes"
+        return                                              ; asked again tomorrow
+    if !A_IsCompiled || url = "" {                          ; running as a script: get it from the page
+        Run(RELEASES_URL)
+        return
+    }
+    DoUpdate(url, latest)
+}
+
+; Download the new exe to Temp, check it is a real program, then hand over to it
+; (see "/update" at the top of the script): it replaces this exe and starts again.
+DoUpdate(url, ver) {
+    tmp := A_Temp "\HK-Master-" ver ".exe"
+    TrayTip("Downloading version " ver "...", APP_NAME, "Iconi Mute")
+    ok := false
+    try {
+        Download(url, tmp)
+        f := FileOpen(tmp, "r")
+        ok := f.Length > 300000 && f.ReadUShort() = 0x5A4D      ; "MZ" = a Windows program
+        f.Close()
+    }
+    if !ok {
+        try FileDelete(tmp)
+        if MsgBox("The download failed.`nOpen the download page instead?", APP_NAME, "YesNo Icon!") = "Yes"
+            Run(RELEASES_URL)
+        return
+    }
+    FS_Stop()
+    Run('"' tmp '" /update "' A_ScriptFullPath '"')
     ExitApp
 }
 

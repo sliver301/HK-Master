@@ -1,0 +1,14 @@
+# Compiled builds: attach these to a GitHub Release, don't commit them
+*.exe
+
+# Personal settings and logs (may contain emails, phone numbers)
+*.ini
+*-log.txt
+scroll-test.txt
+
+# Notes for the AI assistant that maintains this project
+CLAUDE.md
+
+# Windows clutter
+Thumbs.db
+desktop.ini

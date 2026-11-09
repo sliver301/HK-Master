@@ -65,4 +65,6 @@ This app is about 99% vibe-coded: I described what I wanted, tested it on my own
 
 ## License
 
-[MIT](LICENSE): free to use, change and share.
+[GPL-3.0](LICENSE): free to use, change and share. Any copy or modified version you share must also be open source under GPL-3.0, keep the original credit, and say what you changed.
+
+**Name and icon:** the "HK-Master" name and icon belong to Islam Abohadia. Forks are welcome, but please give yours a different name and icon. Contributions back to this repo are the best way to improve HK-Master itself.

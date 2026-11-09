@@ -22,6 +22,8 @@ Free, lightweight, and no admin rights needed.
 
 Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 
+[Code signing policy](#code-signing-policy) · [Privacy](#privacy)
+
 ---
 
 ## Features
@@ -48,12 +50,20 @@ Everything can be switched on/off and changed in the settings window (**Ctrl + A
 
 No administrator rights are needed for either.
 
+## Uninstall
+
+- **Installed:** *Windows Settings › Apps › Installed apps › HK-Master › Uninstall*, or **Uninstall...** in the app's *General* tab. This removes the program, its start-with-Windows entry and its shortcuts.
+- **Portable:** quit it from the tray icon and delete the exe.
+- Uninstall asks whether to delete your settings too. Portable users can delete `%APPDATA%\HK Master\` by hand.
+
 ## Run from source
 
 1. Install [AutoHotkey v2](https://www.autohotkey.com/).
 2. Double-click `HK-Master.ahk`.
 
 To build the exe yourself, open `HK-Master.ahk` with **Ahk2Exe** (comes with AutoHotkey). The icons are picked up from the `icons` folder.
+
+Official release exes are built from this repository by [GitHub Actions](.github/workflows/build.yml), never on a personal PC.
 
 ## Settings
 
@@ -62,6 +72,21 @@ Your settings are stored in `%APPDATA%\HK Master\HK-Master.ini`. Use **Export / 
 ## 🤖 Made with AI
 
 This app is about 99% vibe-coded: I described what I wanted, tested it on my own PC, and an AI assistant (Claude) wrote the code. It works great for me every day, but it hasn't been through a formal code review. Bug reports and pull requests are very welcome.
+
+## Privacy
+
+HK-Master does not collect or send any personal data. Your settings and text shortcuts stay on your PC.
+
+The only network access is the update check: once a day it asks GitHub (`api.github.com`) for the latest release number, and it downloads a new version only when you click **Update**. You can turn the automatic check off in *General › Updates*. Otherwise this program will not transfer any information to other networked systems unless specifically requested by the user. GitHub's own [privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) applies to those requests.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers:** [Islam Abohadia](https://github.com/sliver301)
+- **Approvers:** [Islam Abohadia](https://github.com/sliver301)
+
+Only exes built by this repository's GitHub Actions workflow from the public source are signed, and every signing request is approved by hand. Contributions from others are reviewed before they are merged.
 
 ## License
 

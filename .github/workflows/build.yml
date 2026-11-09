@@ -1,0 +1,119 @@
+# Builds HK-Master.exe on GitHub's Windows machines.
+#
+# - Publishing a release on GitHub (tag like v2.1.3) builds the exe and
+#   attaches it to that release as HK-Master.<version>.exe.
+# - "Run workflow" on the Actions tab builds a test exe you can download
+#   from the run page (nothing is published). Pull requests that touch the
+#   script also get a test build.
+# - Once SignPath is set up (secret SIGNPATH_API_TOKEN + the SIGNPATH_*
+#   variables), release builds are code-signed before they are attached. Without them
+#   the exe is attached unsigned, exactly like a hand-made build.
+
+name: Build exe
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  pull_request:          # test-build changes before they are merged
+    paths: ['HK-Master.ahk', 'icons/**', '.github/workflows/build.yml']
+
+permissions:
+  contents: write        # attach the exe to the release
+  actions: read          # let SignPath fetch the build artifact
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGN: ${{ github.event_name == 'release' && secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from the script
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path HK-Master.ahk -Pattern 'APP_VERSION := "([0-9.]+)"' | Select-Object -First 1
+          if (-not $m) { throw "APP_VERSION not found in HK-Master.ahk" }
+          $v = $m.Matches[0].Groups[1].Value
+          $s = (Select-String -Path HK-Master.ahk -Pattern ';@Ahk2Exe-SetVersion ([0-9.]+)').Matches[0].Groups[1].Value
+          if ($s -ne $v) { throw "APP_VERSION ($v) and ;@Ahk2Exe-SetVersion ($s) differ" }
+          if ('${{ github.event_name }}' -eq 'release') {
+            $tag = '${{ github.event.release.tag_name }}'.TrimStart('v')
+            if ($tag -ne $v) { throw "Release tag v$tag does not match APP_VERSION $v in HK-Master.ahk" }
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building HK-Master $v"
+
+      - name: Get AutoHotkey v2 and the Ahk2Exe compiler
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tools\ahk, tools\ahk2exe | Out-Null
+          # autohotkey.com sits behind a bot check, so take AutoHotkey from its GitHub releases.
+          gh release download --repo AutoHotkey/AutoHotkey --pattern "AutoHotkey_2*.zip" --dir tools --clobber
+          $zip = Get-ChildItem tools\AutoHotkey_2*.zip | Select-Object -First 1
+          if (-not $zip) { throw "No AutoHotkey v2 zip found in AutoHotkey/AutoHotkey releases" }
+          Write-Host "AutoHotkey: $($zip.Name)"
+          Expand-Archive $zip.FullName tools\ahk -Force
+          gh release download --repo AutoHotkey/Ahk2Exe --pattern "Ahk2Exe*.zip" --dir tools --clobber
+          $cz = Get-ChildItem tools\Ahk2Exe*.zip | Select-Object -First 1
+          Write-Host "Compiler: $($cz.Name)"
+          Expand-Archive $cz.FullName tools\ahk2exe -Force
+          Get-ChildItem tools\ahk\AutoHotkey64.exe, tools\ahk2exe\Ahk2Exe.exe | ForEach-Object { Write-Host "OK $($_.FullName)" }
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          $v   = '${{ steps.ver.outputs.version }}'
+          $out = "$PWD\dist"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          # Piping makes PowerShell wait for Ahk2Exe (a GUI program) to finish.
+          & tools\ahk2exe\Ahk2Exe.exe /in "$PWD\HK-Master.ahk" /out "$out\HK-Master.exe" /base "$PWD\tools\ahk\AutoHotkey64.exe" /silent verbose 2>&1 | Out-String | Write-Host
+          # ;@Ahk2Exe-ExeName can redirect the output next to the script, so look in both places.
+          $exe = @("$out\HK-Master.exe", "$PWD\HK-Master.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "Ahk2Exe did not produce HK-Master.exe" }
+          Move-Item $exe "$out\HK-Master.$v.exe" -Force
+          $f = Get-Item "$out\HK-Master.$v.exe"
+          $fv = $f.VersionInfo.FileVersion
+          Write-Host "Built $($f.Name): $([math]::Round($f.Length/1MB,2)) MB, file version $fv"
+          if ($f.Length -lt 100KB) { throw "exe is suspiciously small" }
+
+      - name: Keep the unsigned exe as a build artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: HK-Master-${{ steps.ver.outputs.version }}
+          path: dist/HK-Master.${{ steps.ver.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Code-sign with SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Use the signed exe
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          Copy-Item "signed\HK-Master.$v.exe" "dist\HK-Master.$v.exe" -Force
+          $sig = Get-AuthenticodeSignature "dist\HK-Master.$v.exe"
+          Write-Host "Signature: $($sig.Status) by $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "Signed exe has no valid signature" }
+
+      - name: Attach the exe to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          gh release upload '${{ github.event.release.tag_name }}' "dist\HK-Master.$v.exe" --clobber --repo '${{ github.repository }}'

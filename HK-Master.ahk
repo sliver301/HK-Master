@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.1
+;@Ahk2Exe-SetVersion 2.1.2
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,11 +29,13 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.1"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.2"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
+global SLGLIDE := {h: 0, v: 0.0, pos: 0.0}  ; settings slider glide (SliderGlide)
+global UPD_LABEL := 0                          ; the "Version / last checked" text in Settings
 ; Second step of an update: the new exe (downloaded to Temp) was started as
 ;   new.exe /update "<path of the old exe>"
 ; It waits until the old one has exited, copies itself over it, starts it and quits.
@@ -138,7 +140,8 @@ if IniRead(INI, "State", "JustSaved", 0) = 1 {
 
 if UPDATED
     TrayTip("Updated to version " APP_VERSION ".", APP_NAME, "Iconi Mute")
-; Look for a new version 30 s after start, then every 6 hours (at most once a day, see AutoUpdateCheck).
+; Look for a new version 30 s after start, then every 6 hours, but at most once a day
+; (see AutoUpdateCheck). Quiet unless there is a new version.
 SetTimer(AutoUpdateCheck, -30000)
 SetTimer(AutoUpdateCheck, 6 * 3600 * 1000)
 
@@ -171,6 +174,10 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf
 
 ; ---- Fast scroll (Shift + wheel) --------------------------------------------
+; Shift + wheel over a slider in the settings window: the slider glides, like fast scroll.
+#HotIf OverSlider()
++WheelUp::SliderGlide(1)
++WheelDown::SliderGlide(-1)
 #HotIf !fs.running && FastScrollAllowed()
 +WheelUp::FS_Start(1)
 +WheelDown::FS_Start(-1)
@@ -414,7 +421,8 @@ WheelTarget(win, ctl) {
             break
         h := DllCall("GetParent", "Ptr", h, "Ptr")
     }
-    if WinGetClass(ctl) = "Intermediate D3D Window"
+    DllCall("GetClassName", "Ptr", ctl, "Ptr", buf, "Int", 256)    ; never throws (the window may be gone)
+    if StrGet(buf) = "Intermediate D3D Window"
         return win
     return ctl
 }
@@ -442,8 +450,10 @@ FS_Wheel(delta) {
     CoordMode "Mouse", "Screen"
     MouseGetPos(&x, &y, &win, &ctl, 2)
     target := WheelTarget(win, ctl)
-    if !target
+    if !target || !DllCall("IsWindow", "ptr", target) {     ; window closed mid-glide
+        FS_Stop()
         return
+    }
     ; A glide that started over a panel stops when the mouse moves onto a canvas.
     try {
         if OverCanvas(win, ctl) {
@@ -832,7 +842,7 @@ TogglePause(name, pos, menu) {
 ;  Settings window
 ; =============================================================================
 ShowSettings(*) {
-    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS
+    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, UPD_LABEL
     if SettingsGui {
         SettingsGui.Show()
         return
@@ -953,42 +963,47 @@ ShowSettings(*) {
 
     ; ---- Page 5: general --------------------------------------------------------
     SecHeader(g, "x20 y58 w400", "Look")
-    g.AddText("x20 y92 w80", "Theme")
-    themeDd := g.AddDropDownList("x100 y88 w200", ["Auto", "Light", "Dark"])
-    themeDd.Choose(u.theme = "light" ? 2 : u.theme = "dark" ? 3 : 1)
-    themeDd.OnEvent("Change", ThemeChanged)                  ; applies at once, no Save needed
+    themeCards := []
+    for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
+        themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
 
-    SecHeader(g, "x20 y140 w400", "Startup")
-    startEn := AddCheck(g, 20, 170, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
+    SecHeader(g, "x20 y220 w400", "Startup")
+    startEn := AddCheck(g, 20, 250, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
         , "Start with Windows", 400, (*) => SetStartup(startEn.Value))   ; takes effect at once
     if !InstalledHere() {                                ; a portable copy can't start with Windows
         startEn.Enabled := false
-        Muted(g.AddText("x42 y194 w600", "Install the app to use this."))
+        Muted(g.AddText("x42 y274 w380", "Install the app to use this."))
     }
 
-    SecHeader(g, "x20 y218 w400", "Install")
-    g.AddText("x20 y250 w810", InstalledHere() ? "✔  Installed" : (A_IsCompiled ? "Portable copy (not installed)" : "Running as a script"))
-    instBtn := AddBtn(g, "x20 y278 w150", InstalledHere() ? "Uninstall..." : (FileExist(INSTALL_EXE) ? "Update..." : "Install..."))
+    SecHeader(g, "x20 y310 w400", "Install")
+    g.AddText("x20 y342 w400", InstalledHere() ? "✔  Installed" : (A_IsCompiled ? "Portable copy (not installed)" : "Running as a script"))
+    instBtn := AddBtn(g, "x20 y368 w150", InstalledHere() ? "Uninstall..." : (FileExist(INSTALL_EXE) ? "Update..." : "Install..."))
     instBtn.OnEvent("Click", (*) => (InstalledHere() ? UninstallApp() : InstallFlow()))
     if !A_IsCompiled
         BtnDisable(instBtn)
-    Muted(g.AddText("x182 y284 w560", InstalledHere() ? "Also in Windows Settings > Apps." : "Copies to AppData and starts with Windows."))
+    Muted(g.AddText("x182 y374 w250", InstalledHere() ? "Also in Windows Settings > Apps." : "Copies to AppData, starts with Windows."))
 
-    SecHeader(g, "x20 y338 w400", "Backup")
-    AddBtn(g, "x20 y368 w120", "Export...").OnEvent("Click", (*) => ExportSettings(g))
+    SecHeader(g, "x20 y430 w400", "Backup")
+    AddBtn(g, "x20 y460 w120", "Export...").OnEvent("Click", (*) => ExportSettings(g))
     AddBtn(g, "x+8 w120", "Import...").OnEvent("Click", (*) => ImportSettings(g))
-    Muted(g.AddText("x272 y374 w400", "Save or load all your settings."))
+    Muted(g.AddText("x272 y466 w170", "All your settings."))
 
-    SecHeader(g, "x20 y430 w400", "Settings file")
-    Muted(g.AddText("x20 y460 w800", INI))
-    AddBtn(g, "x20 y486 w140", "Open folder").OnEvent("Click", (*) => Run('"' DATA_DIR '"'))
     SecHeader(g, "x460 y58 w370", "Updates")
-    g.AddText("x460 y92 w370", "Version " APP_VERSION)
+    UPD_LABEL := g.AddText("x460 y92 w370", UpdateStatusText())
     autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
         , (*) => IniWrite(autoUpd.Value ? 1 : 0, INI, "General", "AutoUpdate"))      ; takes effect at once
     updBtn := AddBtn(g, "x460 y152 w140", "Check now")
     updBtn.OnEvent("Click", (*) => CheckForUpdates(true))
     AddBtn(g, "x+8 w140", "Release notes").OnEvent("Click", (*) => Run(RELEASES_URL))
+
+    SecHeader(g, "x460 y220 w370", "Notifications")
+    trayNote := AddCheck(g, 460, 250, IniRead(INI, "General", "HideTrayNotice", 0) != 1
+        , "Tell me when the app keeps running in the tray", 360
+        , (*) => IniWrite(trayNote.Value ? 0 : 1, INI, "General", "HideTrayNotice"))   ; takes effect at once
+
+    SecHeader(g, "x460 y310 w370", "Settings file")
+    Muted(g.AddText("x460 y342 w370 h34", INI))
+    AddBtn(g, "x460 y380 w140", "Open folder").OnEvent("Click", (*) => Run('"' DATA_DIR '"'))
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1064,10 +1079,11 @@ ShowSettings(*) {
         DllCall("MapWindowPoints", "ptr", 0, "ptr", g.Hwnd, "ptr", rc, "uint", 2)
         lx := NumGet(rc, 0, "int"), ly := NumGet(rc, 4, "int"), lh := NumGet(rc, 12, "int") - ly
         x := 0
+        dark := ThemeColors().dark            ; the dark list theme draws its own column lines: ours get 0 width
         for i, sp in list.seps {
             x += Round(fixed[i] * k)
             DllCall("SetWindowPos", "ptr", sp.Hwnd, "ptr", 0, "int", lx + x - Round(4 * k), "int", ly
-                , "int", Max(1, Round(k)), "int", lh, "uint", 0x10)     ; HWND_TOP, NOACTIVATE
+                , "int", dark ? 0 : Max(1, Round(k)), "int", lh, "uint", 0x10)     ; HWND_TOP, NOACTIVATE
         }
     }
 
@@ -1100,6 +1116,7 @@ ShowSettings(*) {
         vt := g.AddText("x565 y" (y + 4) " w70", sl.Value)
         sl.OnEvent("Change", (c, *) => vt.Text := c.Value)
         SLIDERS[sl.Hwnd] := {sl: sl, vt: vt, lo: lo, hi: hi}
+        sl.OnNotify(-12, SliderThumbDraw)              ; NM_CUSTOMDRAW: our own pill-shaped thumb
         return sl
     }
 
@@ -1127,19 +1144,33 @@ ShowSettings(*) {
         return {page: curPage, x: wx, y: wy, w: Round(cw2 / k2), h: Round(ch2 / k2)}
     }
 
-    ThemeChanged(*) {
-        global PENDING, REOPEN, SettingsGui
-        SetTimer(DirtyTick, 0)
-        c := BuildConfig()
-        cfg.theme := c.theme
-        IniWrite(c.theme, INI, "General", "Theme")
-        PENDING := c
-        REOPEN := WinState()
-        SettingsGui := 0
-        GUIDE.hwnd := 0
-        g.Destroy()
+    ; A theme card was clicked: switch at once, recolouring this window in place.
+    PickTheme(key) {
+        if cfg.theme = key
+            return
+        cfg.theme := key
+        IniWrite(key, INI, "General", "Theme")
         ApplyAppMode()
-        SetTimer(ShowSettings, -10)
+        Retheme()
+    }
+
+    Retheme() {
+        t := ThemeColors()
+        ApplyTheme(g)
+        SetWindowIcons(g)
+        for hw, b in BTN
+            try BtnRender(b, false)
+        for hw, ctrl in g
+            if ctrl.HasOwnProp("drawFn") && !BTN.Has(hw)
+                try ctrl.drawFn.Call(ctrl, false)
+        ApplyTheme(guideWin)
+        DllCall("uxtheme\SetWindowTheme", "ptr", guideWin.Hwnd, t.dark ? "str" : "ptr", t.dark ? "DarkMode_Explorer" : 0, "ptr", 0)
+        if !InstalledHere()
+            startEn.lbl.SetFont("c" t.muted)
+        ShowPage(curPage)                                 ; tab colours
+        DllCall("SetWindowPos", "ptr", g.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)  ; repaint the title bar
+        g.GetClientPos(, , &cw4, &ch4)
+        GuiSize(g, 0, cw4, ch4)                           ; repaints everything
     }
 
     RefreshSides() {
@@ -1256,7 +1287,7 @@ ShowSettings(*) {
     ; Everything currently shown in the window, as a settings object (nothing is saved here).
     BuildConfig() {
         c := {snippets: snips, caps: {}, side: {}, fs: {}}
-        c.theme := ["auto", "light", "dark"][themeDd.Value]
+        c.theme := cfg.theme
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
@@ -1296,6 +1327,8 @@ ShowSettings(*) {
     CloseGui(*) {
         global SettingsGui
         SetTimer(DirtyTick, 0)
+        FS_Stop()                                  ; no glide may outlive the window it scrolls
+        SetTimer(SliderGlideTick, 0), SLIDERS.Clear()
         SettingsGui := 0
         GUIDE.hwnd := 0
         g.Destroy()
@@ -1453,21 +1486,110 @@ PlaceGuide(sg, x, y, w, h) {
 
 ; Mouse wheel over a slider: wheel up = more (Windows does the opposite by default).
 SliderWheel(wParam, lParam, msg, hwnd) {
-    if !SLIDERS.Count
+    if !OverSlider()
         return
-    MouseGetPos(, , , &h, 2)
-    if !h || !SLIDERS.Has(h)
-        return
-    e := SLIDERS[h]
     delta := (wParam >> 16) & 0xFFFF
     delta := delta >= 0x8000 ? delta - 0x10000 : delta
-    ; Wheel = next multiple of 5 up or down (33 -> 35 / 30).
+    SliderStep(delta > 0 ? 1 : -1)
+    return 0
+}
+
+; The mouse is over one of the settings window's sliders.
+OverSlider() {
+    if !SLIDERS.Count
+        return false
+    try {
+        MouseGetPos(, , , &h, 2)
+        return h && SLIDERS.Has(h) && DllCall("IsWindowVisible", "ptr", h)
+    }
+    return false
+}
+
+; Fast scroll for the settings sliders: each Shift + wheel notch pushes the slider, it keeps
+; gliding and slows down (faster when Shift is let go), then lands on a multiple of 5.
+SliderGlide(dir) {
+    MouseGetPos(, , , &h, 2)
+    if !SLIDERS.Has(h)
+        return
+    e := SLIDERS[h]
+    if SLGLIDE.h != h || SLGLIDE.v * dir < 0                 ; new slider or reversed: start fresh
+        SLGLIDE.h := h, SLGLIDE.v := 0.0, SLGLIDE.pos := e.sl.Value
+    SLGLIDE.v += dir * (e.hi - e.lo) / 40               ; one notch glides about a quarter of the range
+    SetTimer(SliderGlideTick, 16)
+}
+
+SliderGlideTick() {
+    if !SLGLIDE.h || !SLIDERS.Has(SLGLIDE.h) || !DllCall("IsWindow", "ptr", SLGLIDE.h) {
+        SetTimer(SliderGlideTick, 0)
+        SLGLIDE.h := 0
+        return
+    }
+    e := SLIDERS[SLGLIDE.h]
+    SLGLIDE.pos := Min(e.hi, Max(e.lo, SLGLIDE.pos + SLGLIDE.v))
+    e.sl.Value := Round(SLGLIDE.pos)
+    e.vt.Text := Round(SLGLIDE.pos)
+    SLGLIDE.v *= GetKeyState("Shift", "P") ? 0.9 : 0.75
+    if Abs(SLGLIDE.v) < 0.3 || SLGLIDE.pos <= e.lo || SLGLIDE.pos >= e.hi {
+        SetTimer(SliderGlideTick, 0)
+        v := Min(e.hi, Max(e.lo, Round(SLGLIDE.pos / 5) * 5))
+        e.sl.Value := v
+        e.vt.Text := v
+        SLGLIDE.h := 0
+    }
+}
+
+; The slider thumb is drawn by us as a smooth vertical pill: accent colour, and under the
+; mouse (or while dragged) black in the light theme, white in the dark one (Windows' own
+; hover thumb is black, invisible on a dark window).
+SliderThumbDraw(ctrl, lp) {
+    P := A_PtrSize
+    stage := NumGet(lp, 3 * P, "uint")
+    if stage = 1                                   ; CDDS_PREPAINT
+        return 0x20                                ; CDRF_NOTIFYITEMDRAW
+    if stage != 0x10001 || NumGet(lp, 5 * P + 16, "uptr") != 2     ; not the thumb (TBCD_THUMB)
+        return 0
+    hdc := NumGet(lp, 4 * P, "ptr")
+    l := NumGet(lp, 5 * P, "int"), t := NumGet(lp, 5 * P + 4, "int")
+    r := NumGet(lp, 5 * P + 8, "int"), b := NumGet(lp, 5 * P + 12, "int")
+    state := NumGet(lp, 6 * P + 16, "uint")
+    pt := Buffer(8)
+    DllCall("GetCursorPos", "ptr", pt)
+    DllCall("ScreenToClient", "ptr", ctrl.Hwnd, "ptr", pt)
+    mx := NumGet(pt, 0, "int"), my := NumGet(pt, 4, "int")
+    hot := (mx >= l && mx < r && my >= t && my < b) || (state & 0x41)    ; under the mouse / pressed / hot
+    th := ThemeColors()
+    c := hot ? (th.dark ? "FFFFFF" : "1B1B1B") : th.accent
+    ; Smooth (anti-aliased) pill with GDI+, straight onto the slider's drawing surface.
+    Gp_Start()
+    w := r - l, h := b - t
+    pw := Max(6, Round(w * 0.8)), x := l + (w - pw) / 2      ; a little slimmer than Windows' thumb
+    gr := 0, path := 0, brush := 0
+    DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
+    DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)            ; anti-alias
+    DllCall("gdiplus\GdipCreatePath", "int", 0, "ptr*", &path)
+    d := pw                                                                  ; round ends = full width
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x, "float", t, "float", d, "float", d, "float", 180, "float", 180)
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x, "float", b - d - 1, "float", d, "float", d, "float", 0, "float", 180)
+    DllCall("gdiplus\GdipClosePathFigure", "ptr", path)
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", 0xFF000000 | Integer("0x" c), "ptr*", &brush)
+    DllCall("gdiplus\GdipFillPath", "ptr", gr, "ptr", brush, "ptr", path)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", brush)
+    DllCall("gdiplus\GdipDeletePath", "ptr", path)
+    DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
+    return 4                                       ; CDRF_SKIPDEFAULT
+}
+
+; Move the slider under the mouse to the next multiple of 5 up (dir 1) or down (-1): 33 -> 35 / 30.
+SliderStep(dir) {
+    MouseGetPos(, , , &h, 2)
+    if !SLIDERS.Has(h)
+        return
+    e := SLIDERS[h]
     cur := e.sl.Value
-    v := delta > 0 ? (Floor(cur / 5) + 1) * 5 : (Ceil(cur / 5) - 1) * 5
+    v := dir > 0 ? (Floor(cur / 5) + 1) * 5 : (Ceil(cur / 5) - 1) * 5
     v := Min(e.hi, Max(e.lo, v))
     e.sl.Value := v
     e.vt.Text := v
-    return 0
 }
 
 GuideScrollBar() {
@@ -1610,22 +1732,21 @@ ApplyTheme(win) {
             case "Edit", "DDL", "ComboBox", "ListBox":
                 ctrl.Opt("+Background" t.field)
                 ctrl.SetFont("c" t.fg)
-                if t.dark
-                    SetTheme(hwnd, "DarkMode_CFD")
+                SetTheme(hwnd, t.dark ? "DarkMode_CFD" : "")
             case "ListView":
                 ctrl.Opt("+Background" t.field)
                 ctrl.SetFont("c" t.fg)
-                if t.dark
-                    SetTheme(hwnd, "DarkMode_Explorer")
+                SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
             case "Slider":
                 ctrl.Opt("+Background" t.bg)
             case "Checkbox", "Radio":
-                if t.dark
-                    SetTheme(hwnd, "DarkMode_Explorer")
+                SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
           }
         }
     }
-    SetTheme(h, name) => DllCall("uxtheme\SetWindowTheme", "ptr", h, "str", name, "ptr", 0)
+    ; "" = back to the normal Windows look (used when switching from dark to light).
+    SetTheme(h, name) => name = "" ? DllCall("uxtheme\SetWindowTheme", "ptr", h, "ptr", 0, "ptr", 0)
+                                   : DllCall("uxtheme\SetWindowTheme", "ptr", h, "str", name, "ptr", 0)
 }
 
 ; Remember a control's start position and how it follows a window resize
@@ -1768,6 +1889,8 @@ BtnBitmap(pw, ph, text, hot, dis, primary) {
 }
 
 BtnRender(b, hot) {
+    if b.HasOwnProp("drawFn")
+        return b.drawFn.Call(b, hot)
     SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary))
 }
 
@@ -1795,10 +1918,17 @@ BtnHoverTick() {
 ; The mouse with its side buttons, drawn for the Mouse & keys page. The whole picture
 ; (labels + mouse) is centred in its 300-wide box.
 MouseArt(win, x, y) {
-    t := ThemeColors()
     pic := win.AddText("x" x " y" y " w300 h215 +0xE", "")
     pic.GetPos(, , &pw, &ph)
-    cv := Gp_Canvas(pw, ph, t.bg, true)
+    pic.px := pw, pic.py := ph
+    pic.drawFn := MouseArtDraw
+    MouseArtDraw(pic)
+    return pic
+}
+
+MouseArtDraw(pic, hot := false) {
+    t := ThemeColors()
+    cv := Gp_Canvas(pic.px, pic.py, t.bg, true)
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
@@ -1813,7 +1943,53 @@ MouseArt(win, x, y) {
     Gp_Text(cv, "Back  ›  Undo", mx - 142, 117, 120, 24, t.fg, 12, true, 2)
     Gp_Text(cv, "Both together  ›  Enter", 0, 174, 300, 22, t.muted, 12, false, 1)
     SetBitmap(pic, Gp_Done(cv))
+}
+
+; ---- Theme cards (Settings > General): a rounded square with an icon, the name under it ----
+ThemeCard(win, x, y, key, label, onPick) {
+    pic := win.AddText("x" x " y" y " w96 h80 +0xE +0x100", "")
+    pic.GetPos(, , &pw, &ph)
+    pic.px := pw, pic.py := ph, pic.key := key, pic.dis := false
+    pic.drawFn := ThemeCardDraw
+    BTN[pic.Hwnd] := pic                                       ; lighter under the mouse, like buttons
+    SetTimer(BtnHoverTick, 40)
+    pic.OnEvent("Click", (*) => onPick(key))
+    win.AddText("x" x " y" (y + 84) " w96 Center", label)
+    ThemeCardDraw(pic)
     return pic
+}
+
+ThemeCardDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k, cx := w / 2, cy := h / 2
+    sel := cfg.theme = b.key
+    fill := hot ? t.btnHot : t.btn
+    ic := sel ? t.accent : t.fg
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if sel {                                                   ; chosen: accent frame
+        Gp_Round(cv, 0, 0, w, h, 12, t.accent)
+        Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, 10, fill)
+    } else
+        Gp_Round(cv, 0, 0, w, h, 12, fill)
+    switch b.key {
+        case "light":                                          ; sun
+            Gp_Round(cv, cx - 9, cy - 9, 18, 18, 9, ic)
+            Loop 8 {
+                a := (A_Index - 1) * 3.14159265 / 4
+                Gp_Line(cv, cx + 13 * Cos(a), cy + 13 * Sin(a), cx + 19 * Cos(a), cy + 19 * Sin(a), ic, 2.2)
+            }
+        case "dark":                                           ; crescent moon
+            Gp_Round(cv, cx - 14, cy - 14, 28, 28, 14, ic)
+            Gp_Round(cv, cx - 6, cy - 19, 28, 28, 14, fill)
+        default:                                               ; auto: a screen, half light half dark
+            Gp_Round(cv, cx - 22, cy - 17, 44, 30, 5, ic)
+            Gp_Round(cv, cx - 19, cy - 14, 38, 24, 3, fill)
+            Gp_Round(cv, cx - 19, cy - 14, 19, 24, 3, ic)
+            Gp_Line(cv, cx, cy + 13, cx, cy + 19, ic, 2.5)
+            Gp_Line(cv, cx - 10, cy + 20, cx + 10, cy + 20, ic, 2.5)
+    }
+    SetBitmap(b, Gp_Done(cv))
 }
 
 ; The settings window's own icons: the small one (title bar) follows the app theme, the big one
@@ -2027,9 +2203,68 @@ InstallApp(startup := true) {
     ExitApp
 }
 
+; A message box in the app's own style (theme colours, rounded buttons, rounded corners).
+; buttons: labels left to right; the first is the main (blue) one. Returns the label clicked,
+; or "" when closed with X / Esc.
+; opts (optional): check = {label, value, onChange(value)} adds a check box above the buttons;
+; keepOpen = Map(label, fn): those buttons run fn and leave the dialog open.
+AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
+    res := ""
+    d := Gui("+AlwaysOnTop -MinimizeBox -MaximizeBox", title = "" ? APP_NAME : title)
+    d.MarginX := 24, d.MarginY := 20
+    n := buttons.Length
+    bw := 110
+    W := Max(340, n * bw + (n - 1) * 8)
+    d.SetFont("s10", "Segoe UI")
+    lines := StrSplit(text, "`n").Length
+    d.AddText("x24 y20 w" W " h" (lines * 20), text)
+    d.SetFont("s9", "Segoe UI")
+    y := 20 + lines * 20 + 18
+    if opts && opts.HasOwnProp("check") {
+        ck := opts.check
+        cb := AddCheck(d, 24, y, ck.value, ck.label, W - 30, (*) => ck.onChange.Call(cb.Value))
+        y += 34
+    }
+    x := 24 + W - n * bw - (n - 1) * 8                 ; right-aligned
+    for i, label in buttons {
+        b := AddBtn(d, (i = 1 ? "x" x " y" y : "x+8 yp") " w" bw " h30", label, i = 1)
+        b.OnEvent("Click", Pick.Bind(label))
+    }
+    d.OnEvent("Close", (*) => d.Destroy())
+    d.OnEvent("Escape", (*) => d.Destroy())
+    ApplyTheme(d)
+    SetWindowIcons(d)
+    d.Show("AutoSize")
+    if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", d.Hwnd, "int", 33, "int*", 2, "int", 4) != 0 {
+        d.GetPos(, , &pw, &ph)                              ; Windows 10: clip to a rounded shape
+        DllCall("SetWindowRgn", "ptr", d.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0
+            , "int", pw + 1, "int", ph + 1, "int", 16, "int", 16, "ptr"), "int", true)
+    }
+    hw := d.Hwnd
+    WinWaitClose("ahk_id " hw)
+    return res
+
+    Pick(label, *) {
+        if opts && opts.HasOwnProp("keepOpen") && opts.keepOpen.Has(label)
+            return opts.keepOpen[label].Call()
+        res := label
+        d.Destroy()
+    }
+}
+
 ; =============================================================================
 ;  Updates (GitHub releases)
 ; =============================================================================
+; "Last checked" line on the General page (if the settings window is open).
+UpdateStatusText() {
+    global UPD_LABEL
+    last := IniRead(INI, "State", "LastUpdateCheck", "")
+    txt := "Version " APP_VERSION "   ·   last checked: " (last = "" ? "never" : FormatTime(last, "d MMM yyyy, HH:mm"))
+    if UPD_LABEL
+        try UPD_LABEL.Text := txt
+    return txt
+}
+
 ; Automatic check: on unless [General] AutoUpdate=0, at most once a day ([State] LastUpdateCheck).
 AutoUpdateCheck() {
     if IniRead(INI, "General", "AutoUpdate", 1) != 1
@@ -2056,7 +2291,7 @@ CheckForUpdates(manual := false) {
         whr.Send()
     } catch {
         if manual
-            MsgBox("Could not check for updates.`nAre you online?", APP_NAME, "Icon!")
+            AppDialog("Could not check for updates.`nAre you online?")
         return
     }
     UPD_BUSY := true
@@ -2073,7 +2308,7 @@ CheckForUpdates(manual := false) {
             SetTimer(Poll, 0)
             UPD_BUSY := false
             if manual
-                MsgBox("Could not reach GitHub.`nAre you online?", APP_NAME, "Icon!")
+                AppDialog("Could not reach GitHub.`nAre you online?")
             return
         }
         SetTimer(Poll, 0)
@@ -2085,27 +2320,37 @@ CheckForUpdates(manual := false) {
         }
         if st != 200 || !RegExMatch(body, '"tag_name"\s*:\s*"v?([^"]+)"', &m) {
             if manual
-                MsgBox("Could not check for updates (GitHub answered " st ").", APP_NAME, "Icon!")
+                AppDialog("Could not check for updates (GitHub answered " st ").")
             return
         }
         IniWrite(A_Now, INI, "State", "LastUpdateCheck")
+        UpdateStatusText()
         latest := m[1]
         newer := false
         try newer := VerCompare(latest, APP_VERSION) > 0
         if !newer {
             if manual
-                MsgBox("You have the latest version (" APP_VERSION ").", APP_NAME, "Iconi")
+                AppDialog("✔  You have the latest version (" APP_VERSION ").")
             return
         }
+        if !manual && IniRead(INI, "State", "SkipVersion", "") = latest
+            return                                          ; the user chose "Skip Version"
         url := RegExMatch(body, '"browser_download_url"\s*:\s*"([^"]*/HK-Master[^"/]*\.exe)"', &u) ? u[1] : ""
         OfferUpdate(latest, url)
     }
 }
 
 OfferUpdate(latest, url) {
-    if MsgBox(APP_NAME " " latest " is available (you have " APP_VERSION ").`n`nUpdate now?"
-        , APP_NAME " update", "YesNo Iconi") != "Yes"
-        return                                              ; asked again tomorrow
+    notes := "https://github.com/sliver301/HK-Master/releases/tag/v" latest
+    r := AppDialog("A new version is available: " latest "`nYou have " APP_VERSION "."
+        , ["Update", "What's New", "Not Now", "Skip Version"], APP_NAME " update"
+        , {check: {label: "Check for updates automatically", value: IniRead(INI, "General", "AutoUpdate", 1) = 1
+                 , onChange: (v) => IniWrite(v ? 1 : 0, INI, "General", "AutoUpdate")}
+         , keepOpen: Map("What's New", () => Run(notes))})
+    if r = "Skip Version"
+        IniWrite(latest, INI, "State", "SkipVersion")       ; not offered again (Check now still shows it)
+    if r != "Update"
+        return                                              ; Not Now: asked again tomorrow
     if !A_IsCompiled || url = "" {                          ; running as a script: get it from the page
         Run(RELEASES_URL)
         return
@@ -2127,7 +2372,7 @@ DoUpdate(url, ver) {
     }
     if !ok {
         try FileDelete(tmp)
-        if MsgBox("The download failed.`nOpen the download page instead?", APP_NAME, "YesNo Icon!") = "Yes"
+        if AppDialog("The download failed.", ["Open download page", "Close"]) = "Open download page"
             Run(RELEASES_URL)
         return
     }

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.2
+
+**New look for themes** 🎨
+Pick **Auto**, **Light** or **Dark** from three picture cards in *General*. The window switches instantly, without closing.
+
+**Improvements**
+- When a new version is found: **Update**, **What's New**, **Not Now** or **Skip Version**, plus a switch for automatic checks.
+- Messages from the app now match its look (theme colours, rounded corners).
+- *General › Updates* shows the version and when it last checked.
+- *General › Notifications*: turn the "still running in the tray" message back on.
+- Fast-scroll settings: Shift + scroll makes a slider glide. Slider handles are rounded pills, white on hover in dark mode.
+- Dark mode lists show a single line between columns.
+
+**Fixes**
+- Closing the settings window while something was still gliding showed an error.
+
 ## 2.1.1
 
 **New: automatic updates** 🔄

@@ -54,7 +54,7 @@ No administrator rights are needed for either.
 
 - **Installed:** *Windows Settings › Apps › Installed apps › HK-Master › Uninstall*, or **Uninstall...** in the app's *General* tab. This removes the program, its start-with-Windows entry and its shortcuts.
 - **Portable:** quit it from the tray icon and delete the exe.
-- Your settings stay in `%APPDATA%\HK Master\` in case you come back. Delete that folder to remove them too.
+- Uninstall asks whether to delete your settings too. Portable users can delete `%APPDATA%\HK Master\` by hand.
 
 ## Run from source
 

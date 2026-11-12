@@ -22,7 +22,9 @@ Free, lightweight, and no admin rights needed.
 
 Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 
-[Code signing policy](#code-signing-policy) · [Privacy](#privacy)
+> Windows may warn about an **unknown publisher**: the exe isn't code-signed yet. Click **More info → Run anyway**. Every release exe is built from this public source by [GitHub Actions](.github/workflows/build.yml).
+
+[Privacy](#privacy)
 
 ---
 
@@ -78,15 +80,6 @@ This app is about 99% vibe-coded: I described what I wanted, tested it on my own
 HK-Master does not collect or send any personal data. Your settings and text shortcuts stay on your PC.
 
 The only network access is the update check: once a day it asks GitHub (`api.github.com`) for the latest release number, and it downloads a new version only when you click **Update**. You can turn the automatic check off in *General › Updates*. Otherwise this program will not transfer any information to other networked systems unless specifically requested by the user. GitHub's own [privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) applies to those requests.
-
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-- **Committers and reviewers:** [Islam Abohadia](https://github.com/sliver301)
-- **Approvers:** [Islam Abohadia](https://github.com/sliver301)
-
-Only exes built by this repository's GitHub Actions workflow from the public source are signed, and every signing request is approved by hand. Contributions from others are reviewed before they are merged.
 
 ## License
 

@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.2
+;@Ahk2Exe-SetVersion 2.1.3
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.2"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.3"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -87,7 +87,9 @@ try {                                       ; an older startup entry without /st
         RegWrite(startVal " /startup", "REG_SZ", RUN_KEY, APP_NAME)
 }
 global cfg := LoadConfig()
-global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0}   ; fast-scroll state
+global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
+global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
+FS_LASTUNDER.CaseSense := false
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
 global FS_DEBUG := IniRead(INI, "General", "Debug", 0) = 1
@@ -385,8 +387,20 @@ SideButton(thisBtn, otherBtn, key) {
 ;  Fast scroll
 ; =============================================================================
 ; Fast scroll works everywhere except over a drawing canvas: the drawing area of Revit,
-; AutoCAD and other MFC CAD apps (detected, so their panels and dialogs still glide), and
+; AutoCAD and similar CAD apps (detected, so their panels and dialogs still glide), and
 ; apps listed as canvas apps (Photoshop, Blender...), where Shift + wheel is left alone.
+; Only IsCadApp() apps get the drawing-area check: other MFC apps (Foxit PDF...) use the same
+; window classes for normal documents, which then could not fast scroll.
+IsCadApp(exe) {
+    static apps := ""
+    if !apps {
+        apps := Map(), apps.CaseSense := "Off"
+        for e in ["Revit.exe", "acad.exe", "bricscad.exe", "zwcad.exe", "gcad.exe", "DraftSight.exe", "ARCHICAD.exe"]
+            apps[e] := 1
+    }
+    return apps.Has(exe)
+}
+
 FastScrollAllowed() {
     if !cfg.fs.enabled
         return false
@@ -401,7 +415,8 @@ FastScrollAllowed() {
 
 OverCanvas(win, ctl) {
     exe := WinGetProcessName(win)
-    return cfg.fs.canvasMap.Has(exe) || REMOTE_APPS.Has(exe) || IsCadCanvas(ctl ? ctl : win)
+    return cfg.fs.canvasMap.Has(exe) || REMOTE_APPS.Has(exe)
+        || (IsCadApp(exe) && IsCadCanvas(ctl ? ctl : win))
 }
 
 ; The window that should get scroll messages. Chromium/Electron apps (Chrome, Edge, VS Code,
@@ -462,8 +477,10 @@ FS_Wheel(delta) {
             return
         }
     }
-    if NeedsRealWheel(ctl ? ctl : win) {
+    if fs.real || NeedsRealWheel(ctl ? ctl : win) {
         RealWheel(delta, "WheelUp", "WheelDown")
+        if fs.real
+            FS_Probe(Abs(delta))
         return
     }
     wp := (delta & 0xFFFF) << 16              ; high word = wheel delta, low word = no Shift/Ctrl
@@ -475,14 +492,115 @@ FS_Wheel(delta) {
         , "UInt", 0x2, "UInt", 60, "UPtr*", &r)   ; 0x2 = SMTO_ABORTIFHUNG
     if !ok
         FS_Stop()
+    else
+        FS_Probe(Abs(delta))
 }
 
 ; WinUI 3 apps (WhatsApp desktop, seen in the debug log as WhatsApp.Root.exe with
 ; "Microsoft.UI.Content.DesktopChildSiteBridge" under the mouse) read the wheel from the real
 ; input stream, so a posted wheel message does nothing there. They get real wheel input instead.
+; Foxit PDF (BCGSoft toolkit, "BCGPTabWnd" under the mouse in the debug log) also ignores posted
+; wheel messages: the glide ran but the page never moved.
 NeedsRealWheel(hwnd) {
-    try return InStr(WinGetClass(hwnd), "Microsoft.UI.Content.") = 1
+    try {
+        if InStr(WinGetClass(hwnd), "Microsoft.UI.Content.") = 1
+            return true
+        exe := WinGetProcessName(hwnd)
+        return InStr(exe, "Foxit") = 1 || cfg.fs.realMap.Has(exe)
+    }
     return false
+}
+
+; ---- Apps that ignore posted wheel messages are found automatically ------------
+; At the start of a glide, a small strip of the screen around the mouse is fingerprinted.
+; If ~3 notches later nothing there has changed, the rest of the glide switches to real wheel
+; input. If the strip then moves, the app is remembered in [FastScroll] realWheelApps.
+; If neither moves (end of the page, a blank area), nothing is remembered.
+FS_ProbeStart() {
+    fs.real := false
+    fs.probe := 0
+    try {
+        MouseGetPos(&x, &y, &win, &ctl, 2)
+        exe := WinGetProcessName(win)
+        FS_LASTUNDER[exe] := ctl ? WinGetClass(ctl) : WinGetClass(win)
+        if NeedsRealWheel(ctl ? ctl : win)
+            return
+        fs.probe := {x: x, y: y, exe: exe, crc: RegionCrc(x, y), sent: 0, t: FS_Now(), stage: 1}
+    }
+}
+
+FS_Probe(sent) {
+    p := fs.probe
+    if !p
+        return
+    p.sent += sent
+    if p.sent < 360 || FS_Now() - p.t < 0.15        ; give the app ~3 notches and time to repaint
+        return
+    c := RegionCrc(p.x, p.y)
+    if p.stage = 1 {
+        if c != p.crc {                              ; it scrolls: all good
+            fs.probe := 0
+            return
+        }
+        FS_Log("probe: nothing moved, trying real wheel")
+        fs.real := true
+        p.stage := 2, p.crc := c, p.sent := 0, p.t := FS_Now()
+        return
+    }
+    fs.probe := 0
+    if c != p.crc {
+        FS_Log("probe: real wheel works, remembering " p.exe)
+        AddRealWheelApp(p.exe)
+    } else
+        FS_Log("probe: nothing moved either way")
+}
+
+; CRC of a 160 x 300 px screen area centred on (x, y).
+RegionCrc(x, y) {
+    w := 160, h := 300
+    sdc := DllCall("GetDC", "ptr", 0, "ptr")
+    mdc := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
+    bmp := DllCall("CreateCompatibleBitmap", "ptr", sdc, "int", w, "int", h, "ptr")
+    old := DllCall("SelectObject", "ptr", mdc, "ptr", bmp, "ptr")
+    DllCall("BitBlt", "ptr", mdc, "int", 0, "int", 0, "int", w, "int", h
+        , "ptr", sdc, "int", x - w // 2, "int", y - h // 2, "uint", 0x00CC0020)   ; SRCCOPY
+    DllCall("SelectObject", "ptr", mdc, "ptr", old, "ptr")
+    bi := Buffer(40, 0)
+    NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
+    NumPut("ushort", 1, bi, 12), NumPut("ushort", 32, bi, 14)
+    px := Buffer(w * h * 4, 0)
+    DllCall("GetDIBits", "ptr", mdc, "ptr", bmp, "uint", 0, "uint", h, "ptr", px, "ptr", bi, "uint", 0)
+    crc := DllCall("ntdll\RtlComputeCrc32", "uint", 0, "ptr", px, "uint", px.Size, "uint")
+    DllCall("DeleteObject", "ptr", bmp)
+    DllCall("DeleteDC", "ptr", mdc)
+    DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
+    return crc
+}
+
+; The real-wheel list is written straight to the .ini (never by SaveConfig), so an open
+; settings window can't overwrite what was learned while it was open.
+AddRealWheelApp(exe) {
+    if exe = "" || cfg.fs.realMap.Has(exe)
+        return
+    cfg.fs.real.Push(exe), cfg.fs.realMap[exe] := true
+    SaveRealWheelApps()
+}
+
+RemoveRealWheelApp(exe) {
+    for i, e in cfg.fs.real
+        if e = exe {
+            cfg.fs.real.RemoveAt(i)
+            break
+        }
+    try cfg.fs.realMap.Delete(exe)
+    SaveRealWheelApps()
+}
+
+SaveRealWheelApps() {
+    list := ""
+    for e in cfg.fs.real
+        list .= (list = "" ? "" : ",") e
+    IniWrite(list, INI, "FastScroll", "realWheelApps")
 }
 
 ; Real wheel input, whole notches only (sub-notch steps are saved up until they make a notch).
@@ -560,6 +678,7 @@ FS_Start(dir) {
     fs.acc := 0
     fs.lastFwd := fs.t0
     fs.running := true
+    FS_ProbeStart()
     Send "{Blind}{LShift up}{RShift up}"     ; app sees plain vertical wheel while gliding
     FS_Wheel(dir * 120)                       ; first notch lands immediately
     SetTimer FS_Loop, -1                      ; start the glide loop in its own thread
@@ -731,6 +850,17 @@ LoadConfig() {
             c.fs.canvasMap[e] := true
         }
     }
+    ; Apps that only scroll with real wheel input (learned automatically, see FS_Probe).
+    c.fs.real := []
+    c.fs.realMap := Map()
+    c.fs.realMap.CaseSense := false
+    for e in StrSplit(Rd("FastScroll", "realWheelApps", ""), ",") {
+        e := Trim(e)
+        if e != "" && !c.fs.realMap.Has(e) {
+            c.fs.real.Push(e)
+            c.fs.realMap[e] := true
+        }
+    }
     return c
 }
 
@@ -811,6 +941,7 @@ SetupTray() {
     m.Add("Settings...`tCtrl+Alt+H", ShowSettings)
     m.Add("Pause all shortcuts", TogglePause)
     m.Add("Check for updates", (*) => CheckForUpdates(true))
+    m.Add("Report a problem...", (*) => ReportProblem())
     m.Add()
     m.Add("Restart app", AppReload)
     m.Add("Exit", (*) => ExitApp())
@@ -1004,6 +1135,10 @@ ShowSettings(*) {
     SecHeader(g, "x460 y310 w370", "Settings file")
     Muted(g.AddText("x460 y342 w370 h34", INI))
     AddBtn(g, "x460 y380 w140", "Open folder").OnEvent("Click", (*) => Run('"' DATA_DIR '"'))
+
+    SecHeader(g, "x460 y430 w370", "Help")
+    AddBtn(g, "x460 y460 w170", "Report a problem...").OnEvent("Click", (*) => ReportProblem(DropExclude))
+    Muted(g.AddText("x642 y466 w190", "Fixes it or tells us."))
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1273,6 +1408,15 @@ ShowSettings(*) {
             if e = exe
                 return
         excl.Push(exe)
+        RefreshEx()
+    }
+
+    DropExclude(exe) {                     ; the report flow removed exe from the canvas list
+        for i, e in excl
+            if e = exe {
+                excl.RemoveAt(i)
+                break
+            }
         RefreshEx()
     }
 
@@ -2250,6 +2394,94 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
         res := label
         d.Destroy()
     }
+}
+
+; =============================================================================
+;  Report a problem
+; =============================================================================
+; Fast scroll first tries the usual fixes (canvas list, real wheel input), then opens a
+; prefilled GitHub issue in the browser. Nothing is sent without the user pressing Submit there.
+ReportProblem(onCanvasRemoved := 0) {
+    r := AppDialog("What isn't working?", ["Fast scroll", "Something else", "Cancel"], "Report a problem")
+    if r = "Something else"
+        return OpenIssue()
+    if r != "Fast scroll"
+        return
+    m := Menu()
+    m.Add("Which app doesn't fast scroll?", (*) => 0)
+    m.Disable("Which app doesn't fast scroll?")
+    m.Add()
+    for exe in RunningApps()
+        m.Add(exe, (name, *) => ReportScroll(name, onCanvasRemoved))
+    m.Show()
+}
+
+ReportScroll(exe, onCanvasRemoved := 0) {
+    tryMsg := "Try Shift + scroll in " exe " now."
+    if IsCadApp(exe) {
+        if AppDialog("Fast scroll is off over the drawing area`nof " exe " on purpose.`nIts panels and dialogs still glide."
+            , ["Report anyway", "OK"]) = "Report anyway"
+            OpenIssue(exe)
+        return
+    }
+    if cfg.fs.canvasMap.Has(exe) {
+        if AppDialog(exe ' is in your "No fast scroll" list.', ["Remove it", "Keep it"]) != "Remove it"
+            return
+        for i, e in cfg.fs.canvas
+            if e = exe {
+                cfg.fs.canvas.RemoveAt(i)
+                break
+            }
+        cfg.fs.canvasMap.Delete(exe)
+        list := ""
+        for e in cfg.fs.canvas
+            list .= (list = "" ? "" : ",") e
+        IniWrite(list, INI, "FastScroll", "canvasApps")
+        if onCanvasRemoved
+            onCanvasRemoved.Call(exe)
+        if AppDialog("✔  Removed.`n" tryMsg, ["It works", "Still not working"]) != "Still not working"
+            return
+    }
+    added := false
+    if !NeedsRealWheelExe(exe) {
+        AddRealWheelApp(exe), added := true
+        if AppDialog("Switched " exe "`nto real wheel scrolling.`n" tryMsg, ["It works", "Still not working"]) != "Still not working"
+            return
+        RemoveRealWheelApp(exe)                            ; didn't help: back to how it was
+    }
+    if AppDialog("Sorry, that didn't fix it.`nSend a bug report? It opens on GitHub`nin your browser, filled in for you to check."
+        , ["Open report", "Cancel"]) = "Open report"
+        OpenIssue(exe, added ? "Real wheel input tried: no change." : (NeedsRealWheelExe(exe) ? "Already uses real wheel input." : ""))
+}
+
+; Like NeedsRealWheel, for an exe name (no window needed).
+NeedsRealWheelExe(exe) => InStr(exe, "Foxit") = 1 || cfg.fs.realMap.Has(exe) || exe = "WhatsApp.Root.exe"
+
+OpenIssue(exe := "", note := "") {
+    info := "- HK-Master: " APP_VERSION (A_IsCompiled ? "" : " (script)") "`n- Windows: " A_OSVersion
+    if exe != "" {
+        info .= "`n- App: " exe
+        if FS_LASTUNDER.Has(exe)
+            info .= "`n- Window under the mouse: " FS_LASTUNDER[exe]
+        if note != ""
+            info .= "`n- " note
+    }
+    title := exe != "" ? "Fast scroll doesn't work in " exe : ""
+    body := (exe != "" ? "Shift + wheel doesn't scroll in this app.`n`nAnything else that helps (what you were scrolling, steps):`n`n" : "What happened, and what did you expect?`n`n")
+        . "`n`n---`n" info
+    Run("https://github.com/sliver301/HK-Master/issues/new?title=" UriEncode(title) "&body=" UriEncode(body))
+}
+
+UriEncode(str) {
+    buf := Buffer(StrPut(str, "UTF-8"))
+    StrPut(str, buf, "UTF-8")
+    out := ""
+    loop buf.Size - 1 {
+        b := NumGet(buf, A_Index - 1, "UChar")
+        out .= (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A)
+            || b = 0x2D || b = 0x2E || b = 0x5F || b = 0x7E ? Chr(b) : Format("%{:02X}", b)
+    }
+    return out
 }
 
 ; =============================================================================

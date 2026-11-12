@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.4 (not released yet)
+## 2.1.4 (2026-11-12)
 
 **Improvements**
 - Fast scroll speeds: each slider has a number box to type a value, and a **Reset** button restores the default speeds (#4).

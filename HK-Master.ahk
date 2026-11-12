@@ -2354,6 +2354,8 @@ InstallFlow() {
 ; The Install / Portable question. Returns {install, startup}: install is true for Install (or
 ; Update); startup is the state of the "Start with Windows" box.
 InstallPrompt(updating) {
+    if updating
+        return UpdatePrompt()
     res := {install: false, startup: true, cancel: false}
     d := Gui("+AlwaysOnTop -MinimizeBox -MaximizeBox", APP_NAME)
     d.MarginX := 24, d.MarginY := 20
@@ -2404,6 +2406,49 @@ InstallPrompt(updating) {
     }
 }
 
+; Already installed: Update (newer) / Re-install (same) / Replace (older), Uninstall or Cancel.
+; No "Start with Windows" box here: the installed copy keeps its current setting.
+UpdatePrompt() {
+    res := {install: false, startup: StartupOn(), cancel: true}
+    inst := ""
+    try inst := RegRead(UNINSTALL_KEY, "DisplayVersion")
+    if inst = ""
+        try inst := FileGetVersion(INSTALL_EXE)
+    c := 1
+    try c := VerCompare(APP_VERSION, inst)
+    if inst = ""
+        q := "Update the installed " APP_NAME " to " APP_VERSION "?", main := "Update"
+    else if c > 0
+        q := "Update " APP_NAME " " inst " to " APP_VERSION "?", main := "Update"
+    else if c = 0
+        q := APP_NAME " " APP_VERSION " is already installed.", main := "Re-install"
+    else
+        q := "A newer " APP_NAME " (" inst ") is installed.`nReplace it with " APP_VERSION "?", main := "Replace"
+    r := AppDialog(q, [main, "Uninstall", "Cancel"])
+    if r = main
+        res.install := true, res.cancel := false
+    else if r = "Uninstall"
+        try Run('"' INSTALL_EXE '" /uninstall')
+    return res
+}
+
+; Desktop + Start menu shortcuts: asked only if neither exists yet and the question was never
+; answered with Yes or "Don't ask again" (so updates don't ask every time).
+OfferShortcuts() {
+    lnks := [A_Desktop "\" APP_NAME ".lnk", A_Programs "\" APP_NAME ".lnk"]
+    if FileExist(lnks[1]) || FileExist(lnks[2]) || IniRead(INI, "State", "ShortcutsAsked", 0) = 1
+        return
+    st := {never: false}
+    r := AppDialog("Add shortcuts to the Desktop and Start menu?", ["Yes", "No"], ""
+        , {check: {label: "Don't ask again", value: false, onChange: (v) => st.never := v}})
+    if r = "Yes" {
+        try FileCreateShortcut(INSTALL_EXE, lnks[1], INSTALL_DIR, , APP_NAME)
+        try FileCreateShortcut(INSTALL_EXE, lnks[2], INSTALL_DIR, , APP_NAME)
+    }
+    if r = "Yes" || st.never
+        IniWrite(1, INI, "State", "ShortcutsAsked")
+}
+
 ; Copy this exe to %APPDATA%\HK Master, start it with Windows, offer shortcuts, then switch to it.
 InstallApp(startup := true) {
     if !A_IsCompiled || InstalledHere()
@@ -2426,10 +2471,7 @@ InstallApp(startup := true) {
     }
     SetStartup(startup, '"' INSTALL_EXE '" /startup')
     RegisterUninstall()
-    if MsgBox("Add shortcuts to the Desktop and Start menu?", APP_NAME, "YesNo Iconi") = "Yes" {
-        try FileCreateShortcut(INSTALL_EXE, A_Desktop "\" APP_NAME ".lnk", INSTALL_DIR, , APP_NAME)
-        try FileCreateShortcut(INSTALL_EXE, A_Programs "\" APP_NAME ".lnk", INSTALL_DIR, , APP_NAME)
-    }
+    OfferShortcuts()
     Run('"' INSTALL_EXE '"', INSTALL_DIR)
     ExitApp
 }

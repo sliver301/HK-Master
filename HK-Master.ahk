@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.4
+;@Ahk2Exe-SetVersion 2.1.5
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.4"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.5"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -1083,6 +1083,8 @@ ShowSettings(*) {
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
     fsHeld  := AddSlideRow("Glide: Shift held",     200, u.fs.glideHeld, 0, 100)
     fsRel   := AddSlideRow("Glide: Shift released", 232, u.fs.glideRelease, 0, 100)
+    fsReset := AddBtn(g, "x565 y96 w90", "Reset")             ; back to the default speeds
+    fsReset.OnEvent("Click", (*) => (SetSlide(fsBoost, 30), SetSlide(fsMax, 400), SetSlide(fsHeld, 60), SetSlide(fsRel, 3)))
     SecHeader(g, "x20 y288 w400", "Excluded apps")
     exLv := NewList(g, "x20 y318 w470 h210", ["App"], "h")
     aBtn1 := AddBtn(g, "x506 y318 w130", "Add app...")
@@ -1206,7 +1208,8 @@ ShowSettings(*) {
             list.ModifyCol(i, Round(f * k))
             used += Round(f * k)
         }
-        list.ModifyCol(fixed.Length + 1, Max(60, lw - used - Round(24 * k)))
+        last := Max(60, lw - used - Round(24 * k))
+        list.ModifyCol(fixed.Length + 1, last)
         ; Column separators: a 1 px line at each column edge, the list's full height, on top.
         if !list.HasOwnProp("seps") || !list.seps.Length
             return
@@ -1217,8 +1220,9 @@ ShowSettings(*) {
         x := 0
         dark := ThemeColors().dark            ; the dark list theme draws its own column lines: ours get 0 width
         for i, sp in list.seps {
-            x += Round(fixed[i] * k)
-            DllCall("SetWindowPos", "ptr", sp.Hwnd, "ptr", 0, "int", lx + x - Round(4 * k), "int", ly
+            endLine := i > fixed.Length                ; the line after the last column
+            x += endLine ? last : Round(fixed[i] * k)
+            DllCall("SetWindowPos", "ptr", sp.Hwnd, "ptr", 0, "int", lx + x - Round((endLine ? 1 : 4) * k), "int", ly
                 , "int", dark ? 0 : Max(1, Round(k)), "int", lh, "uint", 0x10)     ; HWND_TOP, NOACTIVATE
         }
     }
@@ -1249,8 +1253,10 @@ ShowSettings(*) {
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
         sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip", Min(hi, Max(lo, Round(value))))
-        vt := g.AddText("x565 y" (y + 4) " w70", sl.Value)
-        sl.OnEvent("Change", (c, *) => vt.Text := c.Value)
+        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit" StrLen(hi), sl.Value)   ; type a value
+        sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
+        vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
+        vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
         SLIDERS[sl.Hwnd] := {sl: sl, vt: vt, lo: lo, hi: hi}
         sl.OnNotify(-12, SliderThumbDraw)              ; NM_CUSTOMDRAW: our own pill-shaped thumb
         return sl
@@ -1786,11 +1792,14 @@ SliderThumbDraw(ctrl, lp) {
     stage := NumGet(lp, 3 * P, "uint")
     if stage = 1                                   ; CDDS_PREPAINT
         return 0x20                                ; CDRF_NOTIFYITEMDRAW
-    if stage != 0x10001 || NumGet(lp, 5 * P + 16, "uptr") != 2     ; not the thumb (TBCD_THUMB)
+    part := NumGet(lp, 5 * P + 16, "uptr")
+    if stage != 0x10001 || (part != 2 && part != 3)    ; only the thumb (TBCD_THUMB) and the track (TBCD_CHANNEL)
         return 0
     hdc := NumGet(lp, 4 * P, "ptr")
     l := NumGet(lp, 5 * P, "int"), t := NumGet(lp, 5 * P + 4, "int")
     r := NumGet(lp, 5 * P + 8, "int"), b := NumGet(lp, 5 * P + 12, "int")
+    if part = 3
+        return SliderTrackDraw(ctrl, hdc, l, t, r, b)
     state := NumGet(lp, 6 * P + 16, "uint")
     pt := Buffer(8)
     DllCall("GetCursorPos", "ptr", pt)
@@ -1817,6 +1826,61 @@ SliderThumbDraw(ctrl, lp) {
     DllCall("gdiplus\GdipDeletePath", "ptr", path)
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
     return 4                                       ; CDRF_SKIPDEFAULT
+}
+
+; The slider's track, drawn by us: Windows' own track is almost white, so it vanished on the
+; light theme. Accent colour up to the thumb, grey after it, round ends.
+SliderTrackDraw(ctrl, hdc, l, t, r, b) {
+    th := ThemeColors()
+    tr := Buffer(16, 0)
+    SendMessage(0x419, 0, tr.Ptr, ctrl.Hwnd)              ; TBM_GETTHUMBRECT
+    mid := (NumGet(tr, 0, "int") + NumGet(tr, 8, "int")) / 2
+    h := 4, y := (t + b) / 2 - h / 2
+    Gp_Start()
+    gr := 0
+    DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
+    DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
+    GpPill(gr, l, y, r - l, h, th.dark ? "6E6E6E" : "8A8A8A")
+    if mid > l
+        GpPill(gr, l, y, Min(mid, r) - l, h, th.accent)
+    DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
+    return 4                                       ; CDRF_SKIPDEFAULT
+}
+
+; A horizontal bar with round ends, filled with one colour.
+GpPill(gr, x, y, w, h, hex) {
+    d := Min(h, w), path := 0, br := 0
+    DllCall("gdiplus\GdipCreatePath", "int", 0, "ptr*", &path)
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x, "float", y, "float", d, "float", h, "float", 90, "float", 180)
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x + w - d, "float", y, "float", d, "float", h, "float", 270, "float", 180)
+    DllCall("gdiplus\GdipClosePathFigure", "ptr", path)
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
+    DllCall("gdiplus\GdipFillPath", "ptr", gr, "ptr", br, "ptr", path)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+    DllCall("gdiplus\GdipDeletePath", "ptr", path)
+}
+
+; A value typed in a slider's number box moves the slider. While typing, out-of-range numbers
+; only move the slider as far as it goes; leaving the box puts the real value back in it.
+SlideTyped(sl, e, lo, hi, final) {
+    txt := Trim(e.Text)
+    if !IsInteger(txt) {
+        if final
+            e.Text := sl.Value
+        return
+    }
+    v := Min(hi, Max(lo, Integer(txt)))
+    if sl.Value != v
+        sl.Value := v
+    if final && txt !== String(v)
+        e.Text := v
+}
+
+; Sets a slider and its number box.
+SetSlide(sl, v) {
+    sl.Value := v
+    if SLIDERS.Has(sl.Hwnd)
+        SLIDERS[sl.Hwnd].vt.Text := v
 }
 
 ; Move the slider under the mouse to the next multiple of 5 up (dir 1) or down (-1): 33 -> 35 / 30.
@@ -2263,10 +2327,11 @@ LoadAppIcon(shade, size) {
 NewList(win, opts, cols, anchorFlags) {
     lv := win.AddListView(opts " -Multi -Hdr -E0x200 +0x4000000", cols)   ; 0x4000000 = WS_CLIPSIBLINGS
     SendMessage(0x1036, 0x1, 0, lv)                            ; LVM_SETEXTENDEDLISTVIEWSTYLE: grid lines off
-    ; Thin lines between the columns (Windows' own grid lines can't be coloured).
-    ; FitList puts them in place; the list never paints over them (WS_CLIPSIBLINGS).
+    ; Thin lines between the columns and at the end of the last one, like the dark list theme
+    ; draws (Windows' own grid lines can't be coloured). FitList puts them in place; the list
+    ; never paints over them (WS_CLIPSIBLINGS).
     lv.seps := []
-    Loop cols.Length - 1 {
+    Loop cols.Length {
         sp := win.AddText("x0 y0 w1 h1")
         sp.role := "line"
         lv.seps.Push(sp)

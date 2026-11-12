@@ -90,6 +90,7 @@ global cfg := LoadConfig()
 global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
+global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
 global FS_DEBUG := IniRead(INI, "General", "Debug", 0) = 1
@@ -1285,17 +1286,28 @@ ShowSettings(*) {
             return
         cfg.theme := key
         IniWrite(key, INI, "General", "Theme")
-        cover := FadeCover(g)                         ; the old look stays on top while we recolour
+        covers := [FadeCover(g)]                      ; the old look stays on top while we recolour
+        for hd, dlg in APPDLGS
+            covers.Push(FadeCover(dlg))
         ApplyAppMode()
         Retheme()
-        if cover
-            FadeAway(cover)
+        FadeAway(covers)
     }
 
     Retheme() {
         t := ThemeColors()
         ApplyTheme(g)
         SetWindowIcons(g)
+        for hd, dlg in APPDLGS {                          ; open messages follow the theme too
+            try {
+                ApplyTheme(dlg)
+                for hc, c in dlg
+                    if c.HasOwnProp("drawFn") && !BTN.Has(hc)
+                        c.drawFn.Call(c, false)
+                DllCall("SetWindowPos", "ptr", hd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)
+                DllCall("RedrawWindow", "ptr", hd, "ptr", 0, "ptr", 0, "uint", 0x0185)
+            }
+        }
         for hw, b in BTN
             try BtnRender(b, false)
         for hw, ctrl in g
@@ -1311,6 +1323,9 @@ ShowSettings(*) {
         DllCall("SetWindowPos", "ptr", g.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)  ; repaint the title bar
         g.GetClientPos(, , &cw4, &ch4)
         GuiSize(g, 0, cw4, ch4)                           ; repaints everything
+        ; Finish all painting now (under the fade cover), so the fade never shows half-drawn frames.
+        for wh in [g.Hwnd, guideWin.Hwnd]
+            DllCall("RedrawWindow", "ptr", wh, "ptr", 0, "ptr", 0, "uint", 0x0185)   ; INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
     }
 
     RefreshSides() {
@@ -1723,23 +1738,36 @@ FadeCover(win) {
         c.AddPicture("x0 y0 w" w " h" h, "HBITMAP:" bmp)
         WinSetTransparent(255, c.Hwnd)
         c.Show("x" x " y" y " w" w " h" h " NA")
+        DllCall("UpdateWindow", "ptr", c.Hwnd)
+        DllCall("dwmapi\DwmFlush")                     ; the cover is really on screen before anything changes
         return c
     }
     return 0
 }
 
-FadeAway(c, ms := 250) {
+; Fades the covers out like a dimmer: one step per screen refresh (DwmFlush waits for the next
+; frame), eased in and out (smoothstep) so it starts and ends gently.
+FadeAway(covers, ms := 450) {
+    list := []
+    for c in covers
+        if c
+            list.Push(c)
+    if !list.Length
+        return
+    DllCall("dwmapi\DwmFlush")
     t0 := A_TickCount
-    SetTimer(Step, 15)
-    Step() {
-        a := 255 - (A_TickCount - t0) * 255 // ms
-        if a <= 0 {
-            SetTimer(Step, 0)
-            try c.Destroy()
-            return
-        }
-        try WinSetTransparent(a, c.Hwnd)
+    loop {
+        f := Min(1, (A_TickCount - t0) / ms)
+        a := Round(255 * (1 - f * f * (3 - 2 * f)))
+        for c in list
+            try WinSetTransparent(Max(a, 1), c.Hwnd)
+        if f >= 1
+            break
+        if DllCall("dwmapi\DwmFlush") != 0                  ; composition off: fall back to a short sleep
+            Sleep(10)
     }
+    for c in list
+        try c.Destroy()
 }
 
 SliderThumbDraw(ctrl, lp) {
@@ -1985,6 +2013,7 @@ Gp_Canvas(w, h, bgHex, px := false) {
         , "int", 0x26200A, "ptr", 0, "ptr*", &bmp)         ; 32-bit ARGB
     DllCall("gdiplus\GdipGetImageGraphicsContext", "ptr", bmp, "ptr*", &gr)
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)        ; anti-aliased edges
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", gr, "int", 4)      ; Half: shapes sit on the pixel grid, edges even on all sides
     DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", gr, "int", 4)    ; anti-aliased text
     DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", Gp_Argb(bgHex))
     return {bmp: bmp, gr: gr, k: k}
@@ -2169,8 +2198,9 @@ ThemeCardDraw(b, hot := false) {
     ic := sel ? t.accent : t.fg
     cv := Gp_Canvas(b.px, b.py, t.bg, true)
     if sel {                                                   ; chosen: accent frame
+        bw := Round(2 * cv.k) / cv.k                          ; frame = whole pixels, same on every side
         Gp_Round(cv, 0, 0, w, h, 12, t.accent)
-        Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, 10, fill)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
     } else
         Gp_Round(cv, 0, 0, w, h, 12, fill)
     switch b.key {
@@ -2442,7 +2472,9 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
             , "int", pw + 1, "int", ph + 1, "int", 16, "int", 16, "ptr"), "int", true)
     }
     hw := d.Hwnd
+    APPDLGS[hw] := d
     WinWaitClose("ahk_id " hw)
+    try APPDLGS.Delete(hw)
     return res
 
     Pick(label, *) {
@@ -2574,6 +2606,7 @@ CheckForUpdates(manual := false) {
         return
     try {
         whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.SetTimeouts(5000, 5000, 5000, 10000)      ; resolve, connect, send, receive (ms)
         whr.Open("GET", UPDATE_API, true)
         whr.SetRequestHeader("User-Agent", APP_NAME)
         whr.SetRequestHeader("Accept", "application/vnd.github+json")
@@ -2589,10 +2622,12 @@ CheckForUpdates(manual := false) {
 
     Poll() {
         global UPD_BUSY
-        done := false
+        done := false, failed := false
         try done := whr.WaitForResponse(0)
+        catch
+            failed := true                            ; offline / DNS failure: no need to wait it out
         if !done {
-            if A_TickCount - t0 < 20000
+            if !failed && A_TickCount - t0 < 12000
                 return
             SetTimer(Poll, 0)
             UPD_BUSY := false

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.4 (not released yet)
+## 2.1.4
 
 **Improvements**
 - Switching between light and dark now fades smoothly, like dimming a light.
@@ -13,7 +13,7 @@
 - A message that was open during a theme switch kept a mix of both themes.
 - The frame around the chosen theme card was thicker on some sides.
 
-## 2.1.3 (not released yet)
+## 2.1.3
 
 **Improvements**
 - Fast scroll now works in Foxit PDF.

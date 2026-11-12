@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.3 (not released yet)
+
+**Improvements**
+- Fast scroll now works in Foxit PDF.
+- Apps that ignore smooth scrolling are found automatically and switched to real wheel scrolling.
+- **Report a problem...** in *General › Help* and the tray menu: it tries the usual fixes first, then opens a ready-filled bug report on GitHub.
+
 ## 2.1.2
 
 **New look for themes** 🎨

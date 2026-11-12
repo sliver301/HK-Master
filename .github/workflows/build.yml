@@ -63,6 +63,16 @@ jobs:
           Expand-Archive $cz.FullName tools\ahk2exe -Force
           Get-ChildItem tools\ahk\AutoHotkey64.exe, tools\ahk2exe\Ahk2Exe.exe | ForEach-Object { Write-Host "OK $($_.FullName)" }
 
+      - name: Check the script for syntax errors
+        shell: pwsh
+        run: |
+          # /Validate loads the script without running it; errors go to stdout and fail the build.
+          $out = & tools\ahk\AutoHotkey64.exe /ErrorStdOut=UTF-8 /Validate "$PWD\HK-Master.ahk" 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          if ($out.Trim()) { Write-Host $out }
+          if ($code -ne 0) { throw "HK-Master.ahk has errors (exit code $code)" }
+          Write-Host "Syntax OK"
+
       - name: Compile
         shell: pwsh
         run: |

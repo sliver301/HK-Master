@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.3
+;@Ahk2Exe-SetVersion 2.1.4
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.3"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.4"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -1285,8 +1285,11 @@ ShowSettings(*) {
             return
         cfg.theme := key
         IniWrite(key, INI, "General", "Theme")
+        cover := FadeCover(g)                         ; the old look stays on top while we recolour
         ApplyAppMode()
         Retheme()
+        if cover
+            FadeAway(cover)
     }
 
     Retheme() {
@@ -1298,6 +1301,8 @@ ShowSettings(*) {
         for hw, ctrl in g
             if ctrl.HasOwnProp("drawFn") && !BTN.Has(hw)
                 try ctrl.drawFn.Call(ctrl, false)
+        for hs in SLIDERS
+            RefreshSlider(hs)
         ApplyTheme(guideWin)
         DllCall("uxtheme\SetWindowTheme", "ptr", guideWin.Hwnd, t.dark ? "str" : "ptr", t.dark ? "DarkMode_Explorer" : 0, "ptr", 0)
         if !InstalledHere()
@@ -1685,6 +1690,58 @@ SliderGlideTick() {
 ; The slider thumb is drawn by us as a smooth vertical pill: accent colour, and under the
 ; mouse (or while dragged) black in the light theme, white in the dark one (Windows' own
 ; hover thumb is black, invisible on a dark window).
+; A slider keeps its old background after a theme change (it caches the parent's brush and only
+; reloads it when resized), so nudge its size and redraw it.
+RefreshSlider(h) {
+    try {
+        ctrl := GuiCtrlFromHwnd(h)
+        ctrl.GetPos(, , &w)
+        ctrl.Move(, , w + 1), ctrl.Move(, , w)
+        SendMessage(0x408, 1, SendMessage(0x402, 0, 0, h), h)       ; TBM_SETRANGEMAX (same max), redraw
+        DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0505)  ; INVALIDATE | ERASE | UPDATENOW | FRAME
+    }
+}
+
+; Theme switch cross-fade: a screenshot of the window covers it while it is recoloured
+; underneath, then fades away. Click-through, so it never gets in the way.
+FadeCover(win) {
+    try {
+        if WinGetMinMax(win.Hwnd) = -1 || !DllCall("IsWindowVisible", "ptr", win.Hwnd)
+            return 0
+        WinGetPos(&x, &y, &w, &h, win.Hwnd)
+        sdc := DllCall("GetDC", "ptr", 0, "ptr")
+        mdc := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
+        bmp := DllCall("CreateCompatibleBitmap", "ptr", sdc, "int", w, "int", h, "ptr")
+        old := DllCall("SelectObject", "ptr", mdc, "ptr", bmp, "ptr")
+        DllCall("BitBlt", "ptr", mdc, "int", 0, "int", 0, "int", w, "int", h
+            , "ptr", sdc, "int", x, "int", y, "uint", 0x00CC0020)            ; SRCCOPY
+        DllCall("SelectObject", "ptr", mdc, "ptr", old, "ptr")
+        DllCall("DeleteDC", "ptr", mdc)
+        DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
+        c := Gui("-Caption +ToolWindow -DPIScale +E0x20 +Owner" win.Hwnd)   ; E0x20 = clicks pass through
+        c.MarginX := 0, c.MarginY := 0
+        c.AddPicture("x0 y0 w" w " h" h, "HBITMAP:" bmp)
+        WinSetTransparent(255, c.Hwnd)
+        c.Show("x" x " y" y " w" w " h" h " NA")
+        return c
+    }
+    return 0
+}
+
+FadeAway(c, ms := 250) {
+    t0 := A_TickCount
+    SetTimer(Step, 15)
+    Step() {
+        a := 255 - (A_TickCount - t0) * 255 // ms
+        if a <= 0 {
+            SetTimer(Step, 0)
+            try c.Destroy()
+            return
+        }
+        try WinSetTransparent(a, c.Hwnd)
+    }
+}
+
 SliderThumbDraw(ctrl, lp) {
     P := A_PtrSize
     stage := NumGet(lp, 3 * P, "uint")

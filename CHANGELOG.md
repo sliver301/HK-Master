@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.4 (not released yet)
+
+**Improvements**
+- Switching between light and dark now fades smoothly.
+
+**Fixes**
+- Sliders kept the old theme's background after switching themes.
+
 ## 2.1.3 (not released yet)
 
 **Improvements**

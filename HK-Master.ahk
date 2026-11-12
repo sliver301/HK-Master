@@ -1208,7 +1208,8 @@ ShowSettings(*) {
             list.ModifyCol(i, Round(f * k))
             used += Round(f * k)
         }
-        list.ModifyCol(fixed.Length + 1, Max(60, lw - used - Round(24 * k)))
+        last := Max(60, lw - used - Round(24 * k))
+        list.ModifyCol(fixed.Length + 1, last)
         ; Column separators: a 1 px line at each column edge, the list's full height, on top.
         if !list.HasOwnProp("seps") || !list.seps.Length
             return
@@ -1219,8 +1220,9 @@ ShowSettings(*) {
         x := 0
         dark := ThemeColors().dark            ; the dark list theme draws its own column lines: ours get 0 width
         for i, sp in list.seps {
-            x += Round(fixed[i] * k)
-            DllCall("SetWindowPos", "ptr", sp.Hwnd, "ptr", 0, "int", lx + x - Round(4 * k), "int", ly
+            endLine := i > fixed.Length                ; the line after the last column
+            x += endLine ? last : Round(fixed[i] * k)
+            DllCall("SetWindowPos", "ptr", sp.Hwnd, "ptr", 0, "int", lx + x - Round((endLine ? 1 : 4) * k), "int", ly
                 , "int", dark ? 0 : Max(1, Round(k)), "int", lh, "uint", 0x10)     ; HWND_TOP, NOACTIVATE
         }
     }
@@ -2325,10 +2327,11 @@ LoadAppIcon(shade, size) {
 NewList(win, opts, cols, anchorFlags) {
     lv := win.AddListView(opts " -Multi -Hdr -E0x200 +0x4000000", cols)   ; 0x4000000 = WS_CLIPSIBLINGS
     SendMessage(0x1036, 0x1, 0, lv)                            ; LVM_SETEXTENDEDLISTVIEWSTYLE: grid lines off
-    ; Thin lines between the columns (Windows' own grid lines can't be coloured).
-    ; FitList puts them in place; the list never paints over them (WS_CLIPSIBLINGS).
+    ; Thin lines between the columns and at the end of the last one, like the dark list theme
+    ; draws (Windows' own grid lines can't be coloured). FitList puts them in place; the list
+    ; never paints over them (WS_CLIPSIBLINGS).
     lv.seps := []
-    Loop cols.Length - 1 {
+    Loop cols.Length {
         sp := win.AddText("x0 y0 w1 h1")
         sp.role := "line"
         lv.seps.Push(sp)

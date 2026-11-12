@@ -10,7 +10,8 @@
 - The Desktop / Start menu shortcuts question is asked only once (with "Don't ask again"), never on updates.
 
 **Fixes**
-- The slider track was almost invisible in the light theme; it is now drawn in the theme colours (#4).
+- Lists in the light theme were missing the line at the end of the last column that the dark theme shows (#4).
+- The slider track is drawn in the theme colours (accent up to the thumb), so it is clear in the light theme too.
 - Sliders kept the old theme's background after switching themes.
 - A message that was open during a theme switch kept a mix of both themes.
 - The frame around the chosen theme card was thicker on some sides.

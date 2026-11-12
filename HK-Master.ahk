@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.3
+;@Ahk2Exe-SetVersion 2.1.4
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.3"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.4"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -90,6 +90,7 @@ global cfg := LoadConfig()
 global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
+global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
 global FS_DEBUG := IniRead(INI, "General", "Debug", 0) = 1
@@ -1285,19 +1286,35 @@ ShowSettings(*) {
             return
         cfg.theme := key
         IniWrite(key, INI, "General", "Theme")
+        covers := [FadeCover(g)]                      ; the old look stays on top while we recolour
+        for hd, dlg in APPDLGS
+            covers.Push(FadeCover(dlg))
         ApplyAppMode()
         Retheme()
+        FadeAway(covers)
     }
 
     Retheme() {
         t := ThemeColors()
         ApplyTheme(g)
         SetWindowIcons(g)
+        for hd, dlg in APPDLGS {                          ; open messages follow the theme too
+            try {
+                ApplyTheme(dlg)
+                for hc, c in dlg
+                    if c.HasOwnProp("drawFn") && !BTN.Has(hc)
+                        c.drawFn.Call(c, false)
+                DllCall("SetWindowPos", "ptr", hd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)
+                DllCall("RedrawWindow", "ptr", hd, "ptr", 0, "ptr", 0, "uint", 0x0185)
+            }
+        }
         for hw, b in BTN
             try BtnRender(b, false)
         for hw, ctrl in g
             if ctrl.HasOwnProp("drawFn") && !BTN.Has(hw)
                 try ctrl.drawFn.Call(ctrl, false)
+        for hs in SLIDERS
+            RefreshSlider(hs)
         ApplyTheme(guideWin)
         DllCall("uxtheme\SetWindowTheme", "ptr", guideWin.Hwnd, t.dark ? "str" : "ptr", t.dark ? "DarkMode_Explorer" : 0, "ptr", 0)
         if !InstalledHere()
@@ -1306,6 +1323,9 @@ ShowSettings(*) {
         DllCall("SetWindowPos", "ptr", g.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)  ; repaint the title bar
         g.GetClientPos(, , &cw4, &ch4)
         GuiSize(g, 0, cw4, ch4)                           ; repaints everything
+        ; Finish all painting now (under the fade cover), so the fade never shows half-drawn frames.
+        for wh in [g.Hwnd, guideWin.Hwnd]
+            DllCall("RedrawWindow", "ptr", wh, "ptr", 0, "ptr", 0, "uint", 0x0185)   ; INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
     }
 
     RefreshSides() {
@@ -1685,6 +1705,82 @@ SliderGlideTick() {
 ; The slider thumb is drawn by us as a smooth vertical pill: accent colour, and under the
 ; mouse (or while dragged) black in the light theme, white in the dark one (Windows' own
 ; hover thumb is black, invisible on a dark window).
+; A slider keeps its old background after a theme change (it caches the parent's brush and only
+; reloads it when resized), so nudge its size and redraw it.
+RefreshSlider(h) {
+    try {
+        ctrl := GuiCtrlFromHwnd(h)
+        ctrl.GetPos(, , &w)
+        ctrl.Move(, , w + 1), ctrl.Move(, , w)
+        SendMessage(0x408, 1, SendMessage(0x402, 0, 0, h), h)       ; TBM_SETRANGEMAX (same max), redraw
+        DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0505)  ; INVALIDATE | ERASE | UPDATENOW | FRAME
+    }
+}
+
+; Theme switch cross-fade: a screenshot of the window covers it while it is recoloured
+; underneath, then fades away. Click-through, so it never gets in the way.
+FadeCover(win) {
+    try {
+        if WinGetMinMax(win.Hwnd) = -1 || !DllCall("IsWindowVisible", "ptr", win.Hwnd)
+            return 0
+        WinGetPos(&x, &y, &w, &h, win.Hwnd)
+        ; WinGetPos includes the invisible resize border (and the shadow under it) on Windows 10/11.
+        ; Copy only the visible frame, or that strip shows up as a grey box while fading.
+        rc := Buffer(16, 0)
+        if !DllCall("dwmapi\DwmGetWindowAttribute", "ptr", win.Hwnd, "uint", 9, "ptr", rc, "uint", 16) {   ; DWMWA_EXTENDED_FRAME_BOUNDS
+            vx := NumGet(rc, 0, "int"), vy := NumGet(rc, 4, "int")
+            vw := NumGet(rc, 8, "int") - vx, vh := NumGet(rc, 12, "int") - vy
+            if vx >= x && vy >= y && vw > 0 && vh > 0 && vx + vw <= x + w && vy + vh <= y + h
+                x := vx, y := vy, w := vw, h := vh
+        }
+        sdc := DllCall("GetDC", "ptr", 0, "ptr")
+        mdc := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
+        bmp := DllCall("CreateCompatibleBitmap", "ptr", sdc, "int", w, "int", h, "ptr")
+        old := DllCall("SelectObject", "ptr", mdc, "ptr", bmp, "ptr")
+        DllCall("BitBlt", "ptr", mdc, "int", 0, "int", 0, "int", w, "int", h
+            , "ptr", sdc, "int", x, "int", y, "uint", 0x00CC0020)            ; SRCCOPY
+        DllCall("SelectObject", "ptr", mdc, "ptr", old, "ptr")
+        DllCall("DeleteDC", "ptr", mdc)
+        DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
+        c := Gui("-Caption +ToolWindow -DPIScale +E0x20 +Owner" win.Hwnd)   ; E0x20 = clicks pass through
+        c.MarginX := 0, c.MarginY := 0
+        c.AddPicture("x0 y0 w" w " h" h, "HBITMAP:" bmp)
+        WinSetTransparent(255, c.Hwnd)
+        pref := 2                                      ; Windows 11: same rounded corners as the window
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", c.Hwnd, "uint", 33, "int*", &pref, "uint", 4)
+        c.Show("x" x " y" y " w" w " h" h " NA")
+        DllCall("UpdateWindow", "ptr", c.Hwnd)
+        DllCall("dwmapi\DwmFlush")                     ; the cover is really on screen before anything changes
+        return c
+    }
+    return 0
+}
+
+; Fades the covers out like a dimmer: one step per screen refresh (DwmFlush waits for the next
+; frame), eased in and out (smoothstep) so it starts and ends gently.
+FadeAway(covers, ms := 450) {
+    list := []
+    for c in covers
+        if c
+            list.Push(c)
+    if !list.Length
+        return
+    DllCall("dwmapi\DwmFlush")
+    t0 := A_TickCount
+    loop {
+        f := Min(1, (A_TickCount - t0) / ms)
+        a := Round(255 * (1 - f * f * (3 - 2 * f)))
+        for c in list
+            try WinSetTransparent(Max(a, 1), c.Hwnd)
+        if f >= 1
+            break
+        if DllCall("dwmapi\DwmFlush") != 0                  ; composition off: fall back to a short sleep
+            Sleep(10)
+    }
+    for c in list
+        try c.Destroy()
+}
+
 SliderThumbDraw(ctrl, lp) {
     P := A_PtrSize
     stage := NumGet(lp, 3 * P, "uint")
@@ -1928,6 +2024,7 @@ Gp_Canvas(w, h, bgHex, px := false) {
         , "int", 0x26200A, "ptr", 0, "ptr*", &bmp)         ; 32-bit ARGB
     DllCall("gdiplus\GdipGetImageGraphicsContext", "ptr", bmp, "ptr*", &gr)
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)        ; anti-aliased edges
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", gr, "int", 4)      ; Half: shapes sit on the pixel grid, edges even on all sides
     DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", gr, "int", 4)    ; anti-aliased text
     DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", Gp_Argb(bgHex))
     return {bmp: bmp, gr: gr, k: k}
@@ -2112,8 +2209,9 @@ ThemeCardDraw(b, hot := false) {
     ic := sel ? t.accent : t.fg
     cv := Gp_Canvas(b.px, b.py, t.bg, true)
     if sel {                                                   ; chosen: accent frame
+        bw := Round(2 * cv.k) / cv.k                          ; frame = whole pixels, same on every side
         Gp_Round(cv, 0, 0, w, h, 12, t.accent)
-        Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, 10, fill)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
     } else
         Gp_Round(cv, 0, 0, w, h, 12, fill)
     switch b.key {
@@ -2267,6 +2365,8 @@ InstallFlow() {
 ; The Install / Portable question. Returns {install, startup}: install is true for Install (or
 ; Update); startup is the state of the "Start with Windows" box.
 InstallPrompt(updating) {
+    if updating
+        return UpdatePrompt()
     res := {install: false, startup: true, cancel: false}
     d := Gui("+AlwaysOnTop -MinimizeBox -MaximizeBox", APP_NAME)
     d.MarginX := 24, d.MarginY := 20
@@ -2317,6 +2417,49 @@ InstallPrompt(updating) {
     }
 }
 
+; Already installed: Update (newer) / Re-install (same) / Replace (older), Uninstall or Cancel.
+; No "Start with Windows" box here: the installed copy keeps its current setting.
+UpdatePrompt() {
+    res := {install: false, startup: StartupOn(), cancel: true}
+    inst := ""
+    try inst := RegRead(UNINSTALL_KEY, "DisplayVersion")
+    if inst = ""
+        try inst := FileGetVersion(INSTALL_EXE)
+    c := 1
+    try c := VerCompare(APP_VERSION, inst)
+    if inst = ""
+        q := "Update the installed " APP_NAME " to " APP_VERSION "?", main := "Update"
+    else if c > 0
+        q := "Update " APP_NAME " " inst " to " APP_VERSION "?", main := "Update"
+    else if c = 0
+        q := APP_NAME " " APP_VERSION " is already installed.", main := "Re-install"
+    else
+        q := "This is an older version (" APP_VERSION ").`nThe installed " APP_NAME " is newer (" inst ").`nDowngrade to " APP_VERSION "?", main := "Downgrade"
+    r := AppDialog(q, [main, "Uninstall", "Cancel"])
+    if r = main
+        res.install := true, res.cancel := false
+    else if r = "Uninstall"
+        try Run('"' INSTALL_EXE '" /uninstall')
+    return res
+}
+
+; Desktop + Start menu shortcuts: asked only if neither exists yet and the question was never
+; answered with Yes or "Don't ask again" (so updates don't ask every time).
+OfferShortcuts() {
+    lnks := [A_Desktop "\" APP_NAME ".lnk", A_Programs "\" APP_NAME ".lnk"]
+    if FileExist(lnks[1]) || FileExist(lnks[2]) || IniRead(INI, "State", "ShortcutsAsked", 0) = 1
+        return
+    st := {never: false}
+    r := AppDialog("Add shortcuts to the Desktop and Start menu?", ["Yes", "No"], ""
+        , {check: {label: "Don't ask again", value: false, onChange: (v) => st.never := v}})
+    if r = "Yes" {
+        try FileCreateShortcut(INSTALL_EXE, lnks[1], INSTALL_DIR, , APP_NAME)
+        try FileCreateShortcut(INSTALL_EXE, lnks[2], INSTALL_DIR, , APP_NAME)
+    }
+    if r = "Yes" || st.never
+        IniWrite(1, INI, "State", "ShortcutsAsked")
+}
+
 ; Copy this exe to %APPDATA%\HK Master, start it with Windows, offer shortcuts, then switch to it.
 InstallApp(startup := true) {
     if !A_IsCompiled || InstalledHere()
@@ -2339,10 +2482,7 @@ InstallApp(startup := true) {
     }
     SetStartup(startup, '"' INSTALL_EXE '" /startup')
     RegisterUninstall()
-    if MsgBox("Add shortcuts to the Desktop and Start menu?", APP_NAME, "YesNo Iconi") = "Yes" {
-        try FileCreateShortcut(INSTALL_EXE, A_Desktop "\" APP_NAME ".lnk", INSTALL_DIR, , APP_NAME)
-        try FileCreateShortcut(INSTALL_EXE, A_Programs "\" APP_NAME ".lnk", INSTALL_DIR, , APP_NAME)
-    }
+    OfferShortcuts()
     Run('"' INSTALL_EXE '"', INSTALL_DIR)
     ExitApp
 }
@@ -2385,7 +2525,9 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
             , "int", pw + 1, "int", ph + 1, "int", 16, "int", 16, "ptr"), "int", true)
     }
     hw := d.Hwnd
+    APPDLGS[hw] := d
     WinWaitClose("ahk_id " hw)
+    try APPDLGS.Delete(hw)
     return res
 
     Pick(label, *) {
@@ -2517,6 +2659,7 @@ CheckForUpdates(manual := false) {
         return
     try {
         whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.SetTimeouts(5000, 5000, 5000, 10000)      ; resolve, connect, send, receive (ms)
         whr.Open("GET", UPDATE_API, true)
         whr.SetRequestHeader("User-Agent", APP_NAME)
         whr.SetRequestHeader("Accept", "application/vnd.github+json")
@@ -2532,10 +2675,12 @@ CheckForUpdates(manual := false) {
 
     Poll() {
         global UPD_BUSY
-        done := false
+        done := false, failed := false
         try done := whr.WaitForResponse(0)
+        catch
+            failed := true                            ; offline / DNS failure: no need to wait it out
         if !done {
-            if A_TickCount - t0 < 20000
+            if !failed && A_TickCount - t0 < 12000
                 return
             SetTimer(Poll, 0)
             UPD_BUSY := false
@@ -2653,7 +2798,7 @@ ShowTrayNotice() {
     d := Gui("+AlwaysOnTop +ToolWindow -Caption +Border")
     d.SetFont("s9", "Segoe UI")
     d.AddText("x16 y14 w280", APP_NAME " is still running in the tray.")
-    cb := AddCheck(d, 16, 46, false, "Don't show again", 200)
+    cb := AddCheck(d, 16, 46, false, "Don't show again", 180)   ; label must end before the OK button (x228)
     ok := AddBtn(d, "x228 y40 w70 h28", "OK", true)
     Done(*) {
         if cb.Value

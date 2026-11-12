@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.4 (not released yet)
+
+**Improvements**
+- Switching between light and dark now fades smoothly, like dimming a light.
+- "Check now" says you're offline within seconds instead of waiting 20.
+- Installing over an existing copy asks **Update / Re-install / Downgrade, Uninstall, Cancel** (and warns when the exe is older) and keeps your "Start with Windows" choice.
+- The Desktop / Start menu shortcuts question is asked only once (with "Don't ask again"), never on updates.
+
+**Fixes**
+- Sliders kept the old theme's background after switching themes.
+- A message that was open during a theme switch kept a mix of both themes.
+- The frame around the chosen theme card was thicker on some sides.
+
 ## 2.1.3 (not released yet)
 
 **Improvements**

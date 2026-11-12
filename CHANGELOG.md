@@ -5,7 +5,7 @@
 **Improvements**
 - Switching between light and dark now fades smoothly, like dimming a light.
 - "Check now" says you're offline within seconds instead of waiting 20.
-- Installing over an existing copy asks **Update / Re-install, Uninstall, Cancel** and keeps your "Start with Windows" choice.
+- Installing over an existing copy asks **Update / Re-install / Downgrade, Uninstall, Cancel** (and warns when the exe is older) and keeps your "Start with Windows" choice.
 - The Desktop / Start menu shortcuts question is asked only once (with "Don't ask again"), never on updates.
 
 **Fixes**

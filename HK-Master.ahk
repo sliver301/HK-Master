@@ -2434,7 +2434,7 @@ UpdatePrompt() {
     else if c = 0
         q := APP_NAME " " APP_VERSION " is already installed.", main := "Re-install"
     else
-        q := "A newer " APP_NAME " (" inst ") is installed.`nReplace it with " APP_VERSION "?", main := "Replace"
+        q := "This is an older version (" APP_VERSION ").`nThe installed " APP_NAME " is newer (" inst ").`nDowngrade to " APP_VERSION "?", main := "Downgrade"
     r := AppDialog(q, [main, "Uninstall", "Cancel"])
     if r = main
         res.install := true, res.cancel := false

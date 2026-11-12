@@ -1083,6 +1083,8 @@ ShowSettings(*) {
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
     fsHeld  := AddSlideRow("Glide: Shift held",     200, u.fs.glideHeld, 0, 100)
     fsRel   := AddSlideRow("Glide: Shift released", 232, u.fs.glideRelease, 0, 100)
+    fsReset := AddBtn(g, "x565 y96 w90", "Reset")             ; back to the default speeds
+    fsReset.OnEvent("Click", (*) => (SetSlide(fsBoost, 30), SetSlide(fsMax, 400), SetSlide(fsHeld, 60), SetSlide(fsRel, 3)))
     SecHeader(g, "x20 y288 w400", "Excluded apps")
     exLv := NewList(g, "x20 y318 w470 h210", ["App"], "h")
     aBtn1 := AddBtn(g, "x506 y318 w130", "Add app...")
@@ -1249,8 +1251,10 @@ ShowSettings(*) {
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
         sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip", Min(hi, Max(lo, Round(value))))
-        vt := g.AddText("x565 y" (y + 4) " w70", sl.Value)
-        sl.OnEvent("Change", (c, *) => vt.Text := c.Value)
+        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit" StrLen(hi), sl.Value)   ; type a value
+        sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
+        vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
+        vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
         SLIDERS[sl.Hwnd] := {sl: sl, vt: vt, lo: lo, hi: hi}
         sl.OnNotify(-12, SliderThumbDraw)              ; NM_CUSTOMDRAW: our own pill-shaped thumb
         return sl
@@ -1786,11 +1790,14 @@ SliderThumbDraw(ctrl, lp) {
     stage := NumGet(lp, 3 * P, "uint")
     if stage = 1                                   ; CDDS_PREPAINT
         return 0x20                                ; CDRF_NOTIFYITEMDRAW
-    if stage != 0x10001 || NumGet(lp, 5 * P + 16, "uptr") != 2     ; not the thumb (TBCD_THUMB)
+    part := NumGet(lp, 5 * P + 16, "uptr")
+    if stage != 0x10001 || (part != 2 && part != 3)    ; only the thumb (TBCD_THUMB) and the track (TBCD_CHANNEL)
         return 0
     hdc := NumGet(lp, 4 * P, "ptr")
     l := NumGet(lp, 5 * P, "int"), t := NumGet(lp, 5 * P + 4, "int")
     r := NumGet(lp, 5 * P + 8, "int"), b := NumGet(lp, 5 * P + 12, "int")
+    if part = 3
+        return SliderTrackDraw(ctrl, hdc, l, t, r, b)
     state := NumGet(lp, 6 * P + 16, "uint")
     pt := Buffer(8)
     DllCall("GetCursorPos", "ptr", pt)
@@ -1817,6 +1824,61 @@ SliderThumbDraw(ctrl, lp) {
     DllCall("gdiplus\GdipDeletePath", "ptr", path)
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
     return 4                                       ; CDRF_SKIPDEFAULT
+}
+
+; The slider's track, drawn by us: Windows' own track is almost white, so it vanished on the
+; light theme. Accent colour up to the thumb, grey after it, round ends.
+SliderTrackDraw(ctrl, hdc, l, t, r, b) {
+    th := ThemeColors()
+    tr := Buffer(16, 0)
+    SendMessage(0x419, 0, tr.Ptr, ctrl.Hwnd)              ; TBM_GETTHUMBRECT
+    mid := (NumGet(tr, 0, "int") + NumGet(tr, 8, "int")) / 2
+    h := 4, y := (t + b) / 2 - h / 2
+    Gp_Start()
+    gr := 0
+    DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
+    DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
+    GpPill(gr, l, y, r - l, h, th.dark ? "6E6E6E" : "8A8A8A")
+    if mid > l
+        GpPill(gr, l, y, Min(mid, r) - l, h, th.accent)
+    DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
+    return 4                                       ; CDRF_SKIPDEFAULT
+}
+
+; A horizontal bar with round ends, filled with one colour.
+GpPill(gr, x, y, w, h, hex) {
+    d := Min(h, w), path := 0, br := 0
+    DllCall("gdiplus\GdipCreatePath", "int", 0, "ptr*", &path)
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x, "float", y, "float", d, "float", h, "float", 90, "float", 180)
+    DllCall("gdiplus\GdipAddPathArc", "ptr", path, "float", x + w - d, "float", y, "float", d, "float", h, "float", 270, "float", 180)
+    DllCall("gdiplus\GdipClosePathFigure", "ptr", path)
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
+    DllCall("gdiplus\GdipFillPath", "ptr", gr, "ptr", br, "ptr", path)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+    DllCall("gdiplus\GdipDeletePath", "ptr", path)
+}
+
+; A value typed in a slider's number box moves the slider. While typing, out-of-range numbers
+; only move the slider as far as it goes; leaving the box puts the real value back in it.
+SlideTyped(sl, e, lo, hi, final) {
+    txt := Trim(e.Text)
+    if !IsInteger(txt) {
+        if final
+            e.Text := sl.Value
+        return
+    }
+    v := Min(hi, Max(lo, Integer(txt)))
+    if sl.Value != v
+        sl.Value := v
+    if final && txt !== String(v)
+        e.Text := v
+}
+
+; Sets a slider and its number box.
+SetSlide(sl, v) {
+    sl.Value := v
+    if SLIDERS.Has(sl.Hwnd)
+        SLIDERS[sl.Hwnd].vt.Text := v
 }
 
 ; Move the slider under the mouse to the next multiple of 5 up (dir 1) or down (-1): 33 -> 35 / 30.

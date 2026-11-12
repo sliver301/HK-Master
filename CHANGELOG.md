@@ -3,12 +3,14 @@
 ## 2.1.4 (not released yet)
 
 **Improvements**
+- Fast scroll speeds: each slider has a number box to type a value, and a **Reset** button restores the default speeds (#4).
 - Switching between light and dark now fades smoothly, like dimming a light.
 - "Check now" says you're offline within seconds instead of waiting 20.
 - Installing over an existing copy asks **Update / Re-install / Downgrade, Uninstall, Cancel** (and warns when the exe is older) and keeps your "Start with Windows" choice.
 - The Desktop / Start menu shortcuts question is asked only once (with "Don't ask again"), never on updates.
 
 **Fixes**
+- The slider track was almost invisible in the light theme; it is now drawn in the theme colours (#4).
 - Sliders kept the old theme's background after switching themes.
 - A message that was open during a theme switch kept a mix of both themes.
 - The frame around the chosen theme card was thicker on some sides.

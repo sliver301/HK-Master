@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.4 (2026-11-12)
+## 2.1.4
 
 **Improvements**
 - Fast scroll speeds: each slider has a number box to type a value, and a **Reset** button restores the default speeds (#4).
@@ -16,7 +16,7 @@
 - A message that was open during a theme switch kept a mix of both themes.
 - The frame around the chosen theme card was thicker on some sides.
 
-## 2.1.3 (not released yet)
+## 2.1.3
 
 **Improvements**
 - Fast scroll now works in Foxit PDF.

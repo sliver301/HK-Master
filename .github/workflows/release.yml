@@ -1,0 +1,82 @@
+# Publish release: one click on the Actions tab makes a whole release.
+#
+#   Actions > Publish release > Run workflow (branch: main)
+#
+# 1. Reads the version from HK-Master.ahk (APP_VERSION) and refuses if that
+#    release already exists, so bump the version first.
+# 2. Takes the notes from the "## <version>" section of CHANGELOG.md.
+# 3. Makes a draft release v<version> on the current commit.
+# 4. Builds HK-Master.<version>.exe (build.yml) and attaches it.
+# 5. Publishes the release. If anything fails, the release stays a draft
+#    (nobody gets an update without an exe); fix it, delete the draft and run again.
+
+name: Publish release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the release, attach the exe
+  actions: read          # SignPath (when set up) fetches the build artifact
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.make.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make the draft release
+        id: make
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=$(grep -oP 'APP_VERSION := "\K[0-9.]+' HK-Master.ahk | head -1 || true)
+          s=$(grep -oP ';@Ahk2Exe-SetVersion \K[0-9.]+' HK-Master.ahk | head -1 || true)
+          [ -n "$v" ] || { echo "::error::APP_VERSION not found in HK-Master.ahk"; exit 1; }
+          [ "$v" = "$s" ] || { echo "::error::APP_VERSION ($v) and ;@Ahk2Exe-SetVersion ($s) differ"; exit 1; }
+          tag="v$v"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Raise APP_VERSION (and ;@Ahk2Exe-SetVersion) first, or delete the old draft."
+            exit 1
+          fi
+          # The "## <version>" section of CHANGELOG.md, heading included, up to the next "## ".
+          awk -v h="## $v" '($0 == h || index($0, h " ") == 1) { f = 1; print; next } f && /^## / { exit } f { print }' CHANGELOG.md > notes.md
+          if [ "$(tail -n +2 notes.md | tr -d '[:space:]')" = "" ]; then
+            echo "::error::CHANGELOG.md has no notes under '## $v'"
+            exit 1
+          fi
+          cat notes.md
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "HK-Master $v" --notes-file notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: draft
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.draft.outputs.tag }}
+    secrets: inherit
+
+  publish:
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ needs.draft.outputs.tag }}'
+          n=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(startswith("HK-Master") and endswith(".exe"))] | length')
+          [ "$n" = "1" ] || { echo "::error::Expected exactly one HK-Master*.exe on $tag, found $n"; exit 1; }
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "Published $tag: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"

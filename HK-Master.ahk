@@ -2798,7 +2798,7 @@ ShowTrayNotice() {
     d := Gui("+AlwaysOnTop +ToolWindow -Caption +Border")
     d.SetFont("s9", "Segoe UI")
     d.AddText("x16 y14 w280", APP_NAME " is still running in the tray.")
-    cb := AddCheck(d, 16, 46, false, "Don't show again", 200)
+    cb := AddCheck(d, 16, 46, false, "Don't show again", 180)   ; label must end before the OK button (x228)
     ok := AddBtn(d, "x228 y40 w70 h28", "OK", true)
     Done(*) {
         if cb.Value

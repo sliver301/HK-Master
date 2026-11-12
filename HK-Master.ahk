@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.4
+;@Ahk2Exe-SetVersion 2.1.5
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.4"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.5"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"

@@ -1724,6 +1724,15 @@ FadeCover(win) {
         if WinGetMinMax(win.Hwnd) = -1 || !DllCall("IsWindowVisible", "ptr", win.Hwnd)
             return 0
         WinGetPos(&x, &y, &w, &h, win.Hwnd)
+        ; WinGetPos includes the invisible resize border (and the shadow under it) on Windows 10/11.
+        ; Copy only the visible frame, or that strip shows up as a grey box while fading.
+        rc := Buffer(16, 0)
+        if !DllCall("dwmapi\DwmGetWindowAttribute", "ptr", win.Hwnd, "uint", 9, "ptr", rc, "uint", 16) {   ; DWMWA_EXTENDED_FRAME_BOUNDS
+            vx := NumGet(rc, 0, "int"), vy := NumGet(rc, 4, "int")
+            vw := NumGet(rc, 8, "int") - vx, vh := NumGet(rc, 12, "int") - vy
+            if vx >= x && vy >= y && vw > 0 && vh > 0 && vx + vw <= x + w && vy + vh <= y + h
+                x := vx, y := vy, w := vw, h := vh
+        }
         sdc := DllCall("GetDC", "ptr", 0, "ptr")
         mdc := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
         bmp := DllCall("CreateCompatibleBitmap", "ptr", sdc, "int", w, "int", h, "ptr")
@@ -1737,6 +1746,8 @@ FadeCover(win) {
         c.MarginX := 0, c.MarginY := 0
         c.AddPicture("x0 y0 w" w " h" h, "HBITMAP:" bmp)
         WinSetTransparent(255, c.Hwnd)
+        pref := 2                                      ; Windows 11: same rounded corners as the window
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", c.Hwnd, "uint", 33, "int*", &pref, "uint", 4)
         c.Show("x" x " y" y " w" w " h" h " NA")
         DllCall("UpdateWindow", "ptr", c.Hwnd)
         DllCall("dwmapi\DwmFlush")                     ; the cover is really on screen before anything changes

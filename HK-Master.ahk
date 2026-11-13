@@ -1254,7 +1254,7 @@ ShowSettings(*) {
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
         sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip", Min(hi, Max(lo, Round(value))))
-        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit" StrLen(hi), sl.Value)   ; type a value
+        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit9", sl.Value)   ; type a value
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
@@ -1857,20 +1857,32 @@ GpPill(gr, x, y, w, h, hex) {
     DllCall("gdiplus\GdipDeletePath", "ptr", path)
 }
 
-; A value typed in a slider's number box moves the slider. While typing, out-of-range numbers
-; only move the slider as far as it goes; leaving the box puts the real value back in it.
+; A value typed in a slider's number box moves the slider. A number above the maximum
+; (typing 2500 or 1111 for a slider that ends at 800) moves the slider to the end at once and,
+; half a second after the last key, turns the box into the maximum too. Leaving the box puts
+; the real value back in it.
 SlideTyped(sl, e, lo, hi, final) {
+    if e.HasOwnProp("capFn")
+        SetTimer(e.capFn, 0)                      ; a new key press restarts the wait
     txt := Trim(e.Text)
     if !IsInteger(txt) {
         if final
             e.Text := sl.Value
         return
     }
-    v := Min(hi, Max(lo, Integer(txt)))
+    n := Integer(txt)
+    v := Min(hi, Max(lo, n))
     if sl.Value != v
         sl.Value := v
-    if final && txt !== String(v)
+    if !final && n > hi {
+        h := e.Hwnd
+        e.capFn := () => DllCall("IsWindow", "ptr", h) ? SlideTyped(sl, e, lo, hi, true) : 0
+        SetTimer(e.capFn, -500)
+    }
+    if final && txt !== String(v) {
         e.Text := v
+        SendMessage(0xB1, StrLen(v), StrLen(v), e)   ; EM_SETSEL: cursor after the number
+    }
 }
 
 ; Sets a slider and its number box.

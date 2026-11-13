@@ -4,6 +4,7 @@
 
 **Improvements**
 - "What's New" in the update window shows the release notes right there (the window grows) instead of opening GitHub.
+- Slider number boxes: typing a number above the maximum (like 2500, or 1111111) sets the maximum half a second after you stop typing.
 - An unexpected error is shown once, saved to `error-log.txt` in the settings folder, and can be reported on GitHub in one click. It no longer opens a new error box over and over.
 
 **Fixes**

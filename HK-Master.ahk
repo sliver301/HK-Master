@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.5
+;@Ahk2Exe-SetVersion 2.1.6
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.5"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.6"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -72,6 +72,7 @@ if A_IsCompiled && A_Args.Length && A_Args[1] = "/uninstall" {
     ExitApp
 }
 DirCreate(DATA_DIR)
+OnError(AppError)
 if !FileExist(INI) {
     for old in [A_AppData "\KS Master\KS-Master.ini", A_AppData "\My Collective HotKeys\My Collective HotKeys.ini"
               , A_ScriptDir "\My Collective HotKeys.ini"]
@@ -1828,21 +1829,17 @@ SliderThumbDraw(ctrl, lp) {
     return 4                                       ; CDRF_SKIPDEFAULT
 }
 
-; The slider's track, drawn by us: Windows' own track is almost white, so it vanished on the
-; light theme. Accent colour up to the thumb, grey after it, round ends.
+; The slider's track, drawn by us in one grey with round ends: Windows' own track is almost
+; white, so it vanished on the light theme. One plain colour on purpose: Windows repaints only
+; the strips around the old and new thumb, so a track filled up to the thumb left stripes.
 SliderTrackDraw(ctrl, hdc, l, t, r, b) {
     th := ThemeColors()
-    tr := Buffer(16, 0)
-    SendMessage(0x419, 0, tr.Ptr, ctrl.Hwnd)              ; TBM_GETTHUMBRECT
-    mid := (NumGet(tr, 0, "int") + NumGet(tr, 8, "int")) / 2
     h := 4, y := (t + b) / 2 - h / 2
     Gp_Start()
     gr := 0
     DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
     GpPill(gr, l, y, r - l, h, th.dark ? "6E6E6E" : "8A8A8A")
-    if mid > l
-        GpPill(gr, l, y, Min(mid, r) - l, h, th.accent)
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
     return 4                                       ; CDRF_SKIPDEFAULT
 }
@@ -2018,7 +2015,10 @@ ApplyAppMode() {
 ApplyTheme(win) {
     t := ThemeColors()
     win.BackColor := t.bg
-    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4)  ; title bar
+    try {                                                                       ; dark or light title bar
+        if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
+            DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
+    }
     for hwnd, ctrl in win {
         role := ctrl.HasOwnProp("role") ? ctrl.role : ""
         try {
@@ -2579,16 +2579,19 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
         b := AddBtn(d, (i = 1 ? "x" x " y" y : "x+8 yp") " w" bw " h30", label, i = 1)
         b.OnEvent("Click", Pick.Bind(label))
     }
+    ; details = {label, text}: that button opens the text in a box under the buttons (the window grows).
+    det := 0
+    if opts && opts.HasOwnProp("details") && opts.details.text != "" {
+        det := d.AddEdit("x24 y" (y + 44) " w" W " h240 ReadOnly Multi VScroll -E0x200 Hidden", opts.details.text)
+    }
     d.OnEvent("Close", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
     ApplyTheme(d)
     SetWindowIcons(d)
     d.Show("AutoSize")
-    if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", d.Hwnd, "int", 33, "int*", 2, "int", 4) != 0 {
-        d.GetPos(, , &pw, &ph)                              ; Windows 10: clip to a rounded shape
-        DllCall("SetWindowRgn", "ptr", d.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0
-            , "int", pw + 1, "int", ph + 1, "int", 16, "int", 16, "ptr"), "int", true)
-    }
+    ; Rounded corners on Windows 11. Windows 10 keeps its square frame: clipping a window that has
+    ; a title bar to a rounded shape showed its invisible resize border as a thick white rim.
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", d.Hwnd, "int", 33, "int*", 2, "int", 4)
     hw := d.Hwnd
     APPDLGS[hw] := d
     WinWaitClose("ahk_id " hw)
@@ -2596,11 +2599,43 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
     return res
 
     Pick(label, *) {
+        if det && label = opts.details.label {            ; show / hide the details box
+            det.Visible := !det.Visible
+            d.Show("AutoSize")
+            return
+        }
         if opts && opts.HasOwnProp("keepOpen") && opts.keepOpen.Has(label)
             return opts.keepOpen[label].Call()
         res := label
         d.Destroy()
     }
+}
+
+; Any unexpected error: write it to error-log.txt and show it once, instead of Windows' error
+; box. A repeating error (from a timer or a mouse hotkey) would otherwise open a new box on every
+; tick or wheel notch. The same error is shown only once per run; it is still logged (up to 50 times).
+AppError(e, mode) {
+    static seen := Map(), busy := false, logged := 0
+    msg := "", where := ""
+    try msg := Type(e) ": " e.Message (e.Extra != "" ? "  [" e.Extra "]" : "")
+    try where := "line " e.Line (e.What != "" ? ", in " e.What : "")
+    if logged < 50 {
+        logged++
+        try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") "  " APP_NAME " " APP_VERSION "  " msg "  (" where ")`n"
+            , DATA_DIR "\error-log.txt", "UTF-8")
+    }
+    key := msg "|" where
+    if busy || seen.Has(key)
+        return 1                                   ; already shown: skip quietly
+    seen[key] := true
+    busy := true
+    try {
+        if MsgBox(APP_NAME " hit an error and skipped it:`n`n" msg "`n(" where ")`n`nIt was saved to error-log.txt in the settings folder.`nReport it on GitHub?"
+            , APP_NAME " error", "YesNo Icon! 0x40000") = "Yes"          ; 0x40000 = always on top
+            OpenIssue(, "Error: " msg " (" where ")")
+    }
+    busy := false
+    return 1                                       ; no Windows error box
 }
 
 ; =============================================================================
@@ -2670,9 +2705,9 @@ OpenIssue(exe := "", note := "") {
         info .= "`n- App: " exe
         if FS_LASTUNDER.Has(exe)
             info .= "`n- Window under the mouse: " FS_LASTUNDER[exe]
-        if note != ""
-            info .= "`n- " note
     }
+    if note != ""
+        info .= "`n- " note
     title := exe != "" ? "Fast scroll doesn't work in " exe : ""
     body := (exe != "" ? "Shift + wheel doesn't scroll in this app.`n`nAnything else that helps (what you were scrolling, steps):`n`n" : "What happened, and what did you expect?`n`n")
         . "`n`n---`n" info
@@ -2778,17 +2813,19 @@ CheckForUpdates(manual := false) {
         if !manual && IniRead(INI, "State", "SkipVersion", "") = latest
             return                                          ; the user chose "Skip Version"
         url := RegExMatch(body, '"browser_download_url"\s*:\s*"([^"]*/HK-Master[^"/]*\.exe)"', &u) ? u[1] : ""
-        OfferUpdate(latest, url)
+        notes := RegExMatch(body, '"body"\s*:\s*"((?:[^"\\]++|\\.)*+)"', &nb) ? NotesText(JsonUnescape(nb[1])) : ""
+        OfferUpdate(latest, url, notes)
     }
 }
 
-OfferUpdate(latest, url) {
-    notes := "https://github.com/sliver301/HK-Master/releases/tag/v" latest
+OfferUpdate(latest, url, notesText := "") {
+    page := "https://github.com/sliver301/HK-Master/releases/tag/v" latest
     r := AppDialog("A new version is available: " latest "`nYou have " APP_VERSION "."
         , ["Update", "What's New", "Not Now", "Skip Version"], APP_NAME " update"
         , {check: {label: "Check for updates automatically", value: IniRead(INI, "General", "AutoUpdate", 1) = 1
                  , onChange: (v) => IniWrite(v ? 1 : 0, INI, "General", "AutoUpdate")}
-         , keepOpen: Map("What's New", () => Run(notes))})
+         , details: {label: "What's New", text: notesText}           ; shown inside the window
+         , keepOpen: Map("What's New", () => Run(page))})            ; no notes downloaded: open the page
     if r = "Skip Version"
         IniWrite(latest, INI, "State", "SkipVersion")       ; not offered again (Check now still shows it)
     if r != "Update"
@@ -2798,6 +2835,41 @@ OfferUpdate(latest, url) {
         return
     }
     DoUpdate(url, latest)
+}
+
+; A JSON string's escapes (\n, \", \u00e9...) turned back into text.
+JsonUnescape(s) {
+    out := "", i := 1, n := StrLen(s)
+    while i <= n {
+        c := SubStr(s, i, 1)
+        if c != "\" || i = n {
+            out .= c, i++
+            continue
+        }
+        e := SubStr(s, i + 1, 1)
+        switch e, true {
+            case "n": out .= "`n"
+            case "r": out .= ""
+            case "t": out .= "`t"
+            case "u":
+                out .= Chr(Integer("0x" SubStr(s, i + 2, 4))), i += 4
+            default: out .= e                      ; \" \\ \/
+        }
+        i += 2
+    }
+    return out
+}
+
+; Release notes (Markdown) as plain text for the update window: no ** or ## marks, bullets as •.
+NotesText(md) {
+    t := ""
+    for line in StrSplit(md, "`n", "`r") {
+        line := StrReplace(line, "**")
+        line := RegExReplace(line, "^#+\s*")
+        line := RegExReplace(line, "^\s*[-*]\s+", "•  ")
+        t .= line "`r`n"
+    }
+    return Trim(t, "`r`n")
 }
 
 ; Download the new exe to Temp, check it is a real program, then hand over to it

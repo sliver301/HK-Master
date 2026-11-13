@@ -100,7 +100,7 @@ jobs:
 
       - name: Keep the unsigned exe as a build artifact
         id: upload
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: HK-Master-${{ steps.ver.outputs.version }}
           path: dist/HK-Master.${{ steps.ver.outputs.version }}.exe

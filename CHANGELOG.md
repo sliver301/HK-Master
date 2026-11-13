@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.6 (not released yet)
+
+**Improvements**
+- "What's New" in the update window shows the release notes right there (the window grows) instead of opening GitHub.
+- Slider number boxes: typing a number above the maximum (like 2500, or 1111111) sets the maximum half a second after you stop typing.
+- An unexpected error is shown once, saved to `error-log.txt` in the settings folder, and can be reported on GitHub in one click. It no longer opens a new error box over and over.
+
+**Fixes**
+- Windows 10: message windows had a thick white rim around them, and the title bar stayed light in the dark theme on older Windows 10.
+- The slider track left stripes behind when the slider moved.
+
 ## 2.1.5
 
 **Improvements**

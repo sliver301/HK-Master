@@ -37,7 +37,7 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}    # empty = test build, nothing attached
       SIGN: ${{ (github.event.release.tag_name || inputs.tag) != '' && secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Read version from the script
         id: ver
@@ -100,7 +100,7 @@ jobs:
 
       - name: Keep the unsigned exe as a build artifact
         id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: HK-Master-${{ steps.ver.outputs.version }}
           path: dist/HK-Master.${{ steps.ver.outputs.version }}.exe

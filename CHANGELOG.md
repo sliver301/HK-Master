@@ -1,6 +1,11 @@
 # Changelog
 
-## 2.1.6 (not released yet)
+## 2.1.7 (not released yet)
+
+**Improvements**
+- Sideways scroll (Ctrl + Shift + wheel) now sends real sideways-wheel input, so it works in every app that can scroll sideways.
+
+## 2.1.6
 
 **Improvements**
 - "What's New" in the update window shows the release notes right there (the window grows) instead of opening GitHub.

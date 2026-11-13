@@ -48,7 +48,8 @@ jobs:
             exit 1
           fi
           # The "## <version>" section of CHANGELOG.md, heading included, up to the next "## ".
-          awk -v h="## $v" '($0 == h || index($0, h " ") == 1) { f = 1; print; next } f && /^## / { exit } f { print }' CHANGELOG.md > notes.md
+          # The heading is written as just "## <version>" (drops a note like "(not released yet)").
+          awk -v h="## $v" '($0 == h || index($0, h " ") == 1) { f = 1; print h; next } f && /^## / { exit } f { print }' CHANGELOG.md > notes.md
           if [ "$(tail -n +2 notes.md | tr -d '[:space:]')" = "" ]; then
             echo "::error::CHANGELOG.md has no notes under '## $v'"
             exit 1

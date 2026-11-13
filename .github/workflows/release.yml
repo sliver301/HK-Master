@@ -25,11 +25,11 @@ concurrency:
 
 jobs:
   draft:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.make.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Make the draft release
         id: make
@@ -67,7 +67,7 @@ jobs:
 
   publish:
     needs: [draft, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Publish the release
         env:

@@ -3,7 +3,7 @@
 ## 2.1.7 (not released yet)
 
 **Improvements**
-- Sideways scroll (Ctrl + Shift + wheel) now sends real sideways-wheel input, so it works in every app that can scroll sideways.
+- Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.
 
 ## 2.1.6
 

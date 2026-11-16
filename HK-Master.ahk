@@ -620,10 +620,26 @@ RealWheel(delta, upKey, downKey) {
     Send "{" (n > 0 ? upKey : downKey) " " Abs(n) "}"
 }
 
-; Horizontal scroll by one notch (Ctrl + Shift + wheel): always real sideways-wheel input, so it
-; works in every app that scrolls sideways with a tilt wheel or touchpad. Send (not {Blind}) lifts
-; the held Ctrl and Shift around it, so the app sees a plain sideways scroll, not a zoom.
+; Horizontal scroll by one notch (Ctrl + Shift + wheel).
+; - Classic controls with their own horizontal scroll bar (lists, text boxes, a parent panel):
+;   3 "line left / right" steps (WM_HSCROLL). Many of them ignore sideways-wheel input.
+; - Everything else: real sideways-wheel input (like a tilt wheel / touchpad), which works in
+;   apps that ignore posted messages. Send (not {Blind}) lifts the held Ctrl and Shift around it,
+;   so the app sees a plain sideways scroll, not a zoom.
 HScroll(dir) {
+    CoordMode "Mouse", "Screen"
+    MouseGetPos(, , &win, &ctl, 2)
+    h := ctl ? ctl : win
+    while h {
+        if DllCall("GetWindowLong", "Ptr", h, "Int", -16, "Int") & 0x100000 {   ; WS_HSCROLL
+            Loop 3
+                PostMessage(0x114, dir > 0 ? 1 : 0, 0, h)    ; WM_HSCROLL: SB_LINERIGHT / SB_LINELEFT
+            return
+        }
+        if h = win
+            break
+        h := DllCall("GetParent", "Ptr", h, "Ptr")
+    }
     SendLevel 0
     Send "{" (dir > 0 ? "WheelRight" : "WheelLeft") "}"
 }

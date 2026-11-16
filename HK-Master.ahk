@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.6
+;@Ahk2Exe-SetVersion 2.1.7
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.6"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.7"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -620,33 +620,12 @@ RealWheel(delta, upKey, downKey) {
     Send "{" (n > 0 ? upKey : downKey) " " Abs(n) "}"
 }
 
-; Horizontal scroll by one notch. Controls with a horizontal scroll bar (classic lists,
-; text boxes, also a parent panel's bar) get 3 "line left/right" steps; everything else gets
-; a horizontal wheel message (browsers, Office, PDF readers...).
+; Horizontal scroll by one notch (Ctrl + Shift + wheel): always real sideways-wheel input, so it
+; works in every app that scrolls sideways with a tilt wheel or touchpad. Send (not {Blind}) lifts
+; the held Ctrl and Shift around it, so the app sees a plain sideways scroll, not a zoom.
 HScroll(dir) {
-    CoordMode "Mouse", "Screen"
-    MouseGetPos(&x, &y, &win, &ctl, 2)
-    target := WheelTarget(win, ctl)
-    if !target
-        return
-    h := target
-    while h {
-        if DllCall("GetWindowLong", "Ptr", h, "Int", -16, "Int") & 0x100000 {   ; WS_HSCROLL
-            Loop 3
-                PostMessage(0x114, dir > 0 ? 1 : 0, 0, h)    ; WM_HSCROLL: SB_LINERIGHT / SB_LINELEFT
-            return
-        }
-        if h = win
-            break
-        h := DllCall("GetParent", "Ptr", h, "Ptr")
-    }
-    if NeedsRealWheel(ctl ? ctl : win) {
-        RealWheel(dir * 120, "WheelRight", "WheelLeft")
-        return
-    }
-    wp := ((dir * 120) & 0xFFFF) << 16
-    lp := ((y & 0xFFFF) << 16) | (x & 0xFFFF)
-    PostMessage(0x20E, wp, lp, target)                 ; WM_MOUSEHWHEEL
+    SendLevel 0
+    Send "{" (dir > 0 ? "WheelRight" : "WheelLeft") "}"
 }
 
 FS_Now() {

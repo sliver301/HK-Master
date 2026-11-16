@@ -96,6 +96,8 @@ global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled ove
 FS_LASTUNDER.CaseSense := false
 global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
 OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
+global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
+OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
 global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
 global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
 global TB_H := 32                   ; its height (96-dpi units)
@@ -1037,6 +1039,8 @@ ShowSettings(*) {
 
     ; ---- Page 1: the illustrated guide (its own scrollable child window) --------
     guideWin := ShortcutGuide(g)
+    guideSb := ScrollOverlay(g, "guide")                      ; our scroll bar, shown with page 1
+    pages[1].Push(guideSb), known[guideSb.Hwnd] := true
 
     ; ---- Page 2: text shortcuts -------------------------------------------------
     SecHeader(g, "x20 y56 w810", "Type a short code, get the full text")
@@ -1212,6 +1216,7 @@ ShowSettings(*) {
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
         PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
+        ScrollPlace(guideSb)
         if TITLED.Has(gg.Hwnd)                          ; maximise / restore picture
             for tbtn in TITLED[gg.Hwnd].btns
                 TitleBtnDraw(tbtn)
@@ -1241,6 +1246,8 @@ ShowSettings(*) {
         rw := NumGet(wr, 8, "int") - NumGet(wr, 0, "int"), rh := NumGet(wr, 12, "int") - NumGet(wr, 4, "int")
         d := Round(14 * k)
         DllCall("SetWindowRgn", "ptr", list.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", rw + 1, "int", rh + 1, "int", d, "int", d, "ptr"), "int", 1)
+        if list.HasOwnProp("sb")
+            ScrollPlace(list.sb)                               ; (narrows that region by the scroll bar)
         ; Column separators: a 1 px line at each column edge, the list's full height, on top.
         if !list.HasOwnProp("seps") || !list.seps.Length
             return
@@ -2482,7 +2489,7 @@ TitledFit(win, &nw, &nh) {
     }
     minX := 99999, maxR := 0, maxB := 0
     for hwnd, c in win {
-        if skip.Has(hwnd) || !(DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x10000000)   ; WS_VISIBLE
+        if skip.Has(hwnd) || SCROLLS.Has(hwnd) || !(DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x10000000)   ; WS_VISIBLE
             continue
         c.GetPos(&cx, &cy, &cw, &ch)
         minX := Min(minX, cx), maxR := Max(maxR, cx + cw), maxB := Max(maxB, cy + ch)
@@ -2593,6 +2600,140 @@ TitledHitTest(wParam, lParam, msg, hwnd) {
         return 2                                                 ; HTCAPTION
 }
 
+; ---- Our own scroll bars ------------------------------------------------------------------
+; Windows' scroll bars can't be coloured or rounded, so every scrolling box gets ours: a thin
+; rounded thumb in a rounded track, in the theme's colours. The box keeps its own scroll bar
+; (wheel, keys and positions stay Windows'), cut off with a window region, and ours sits in
+; that strip. A timer keeps ours in step; dragging it or clicking its track scrolls the box.
+; target: a list or text box, or "guide" (the Shortcuts page).
+ScrollOverlay(win, target) {
+    sb := win.AddText("x0 y0 w1 h1 +0xD +0x100", "")
+    sb.target := target, sb.kind := IsObject(target) ? target.Type : "guide"
+    sb.info := "", sb.hot := false, sb.px := 1, sb.py := 1
+    SCROLLS[sb.Hwnd] := sb
+    SetTimer(ScrollTick, 50)
+    return sb
+}
+
+ScrollTarget(sb) => sb.kind = "guide" ? GUIDE.hwnd : sb.target.Hwnd
+
+; Put the scroll bar over the right edge of its box, and cut the box's own one off.
+ScrollPlace(sb) {
+    h := ScrollTarget(sb)
+    if !h || !DllCall("IsWindow", "ptr", h)
+        return
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", h, "ptr", rc)
+    DllCall("MapWindowPoints", "ptr", 0, "ptr", DllCall("GetParent", "ptr", sb.Hwnd, "ptr"), "ptr", rc, "uint", 2)
+    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
+    w := DllCall("GetSystemMetrics", "int", 2)                  ; SM_CXVSCROLL: the width of Windows' bar
+    DllCall("SetWindowPos", "ptr", sb.Hwnd, "ptr", 0, "int", r - w, "int", t, "int", w, "int", b - t, "uint", 0x10)   ; on top
+    d := Round(14 * A_ScreenDPI / 96)                           ; round corners, like the buttons
+    DllCall("SetWindowRgn", "ptr", h, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", r - l - w + 1, "int", b - t + 1
+        , "int", d, "int", d, "ptr"), "int", 1)
+    sb.px := w, sb.py := b - t, sb.info := ""
+    ScrollDraw(sb)
+}
+
+; Where the box is scrolled: {ok, mn, mx, pg, pos}. ok = there is something to scroll.
+ScrollState(h) {
+    si := Buffer(28, 0)
+    NumPut("uint", 28, "uint", 0x17, si)                        ; SIF_ALL
+    got := h && DllCall("GetScrollInfo", "ptr", h, "int", 1, "ptr", si)
+    s := {mn: NumGet(si, 8, "int"), mx: NumGet(si, 12, "int"), pg: NumGet(si, 16, "uint"), pos: NumGet(si, 20, "int")}
+    s.ok := got && s.pg > 0 && s.mx - s.mn + 1 > s.pg
+    return s
+}
+
+; The thumb in pixels: top, height, track top and track length.
+ScrollGeom(sb, s) {
+    k := A_ScreenDPI / 96, pad := Round(2 * k)
+    len := sb.py - 2 * pad, rng := s.mx - s.mn + 1
+    th := Max(Round(24 * k), Round(len * s.pg / rng))
+    ty := pad + Round((len - th) * (s.pos - s.mn) / Max(1, rng - s.pg))
+    return {ty: ty, th: th, pad: pad, len: len}
+}
+
+ScrollDraw(sb) {
+    s := ScrollState(ScrollTarget(sb))
+    t := ThemeColors()
+    key := s.ok "|" s.mn "|" s.mx "|" s.pg "|" s.pos "|" sb.hot "|" sb.px "x" sb.py "|" t.bg t.field
+    if key = sb.info
+        return
+    sb.info := key
+    k := A_ScreenDPI / 96
+    cv := Gp_Canvas(sb.px, sb.py, t.bg, true)
+    if s.ok {
+        gm := ScrollGeom(sb, s)
+        bw := 6, x := (sb.px / k - bw) / 2
+        Gp_Round(cv, x, gm.pad / k, bw, gm.len / k, bw / 2, t.dark ? t.field : "E6E6E6")             ; track
+        thumb := t.dark ? (sb.hot ? "9A9DAA" : "6A6D7A") : (sb.hot ? "6E6E6E" : "A6A6A6")
+        Gp_Round(cv, x, gm.ty / k, bw, gm.th / k, bw / 2, thumb)                                       ; thumb
+    }
+    SetBitmap(sb, Gp_Done(cv))
+}
+
+; Keeps every visible scroll bar in step with its box (and lighter under the mouse).
+ScrollTick() {
+    if !SCROLLS.Count {
+        SetTimer(ScrollTick, 0)
+        return
+    }
+    MouseGetPos(, , , &over, 2)
+    for hw, sb in SCROLLS.Clone() {
+        if !DllCall("IsWindow", "ptr", hw) {
+            SCROLLS.Delete(hw)
+            continue
+        }
+        if !DllCall("IsWindowVisible", "ptr", hw)
+            continue
+        sb.hot := over = hw
+        ScrollDraw(sb)
+    }
+}
+
+; Mouse down on one of our scroll bars: drag the thumb (or, on the track, jump there and drag).
+ScrollDown(wParam, lParam, msg, hwnd) {
+    if !SCROLLS.Has(hwnd)
+        return
+    sb := SCROLLS[hwnd], h := ScrollTarget(sb)
+    s := ScrollState(h)
+    if !s.ok
+        return 0
+    gm := ScrollGeom(sb, s)
+    my := (lParam >> 16) & 0xFFFF
+    grab := my >= gm.ty && my < gm.ty + gm.th ? my - gm.ty : gm.th // 2
+    pt := Buffer(8)
+    while GetKeyState("LButton", "P") {
+        DllCall("GetCursorPos", "ptr", pt)
+        DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
+        frac := Min(1, Max(0, (NumGet(pt, 4, "int") - grab - gm.pad) / Max(1, gm.len - gm.th)))
+        ScrollTo(sb, h, s.mn + Round(frac * (s.mx - s.mn + 1 - s.pg)))
+        sb.hot := true
+        ScrollDraw(sb)
+        Sleep 10
+    }
+    return 0
+}
+
+ScrollTo(sb, h, newPos) {
+    cur := ScrollState(h).pos
+    if newPos = cur
+        return
+    switch sb.kind {
+        case "guide":
+            GuideScroll(newPos - GUIDE.pos)
+        case "ListView":                                        ; scrolled in pixels: rows x row height
+            rc := Buffer(16, 0)
+            SendMessage(0x100E, 0, rc.Ptr, h)                   ; LVM_GETITEMRECT (row 0, LVIR_BOUNDS)
+            ih := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+            if ih > 0
+                SendMessage(0x1014, 0, (newPos - cur) * ih, h)  ; LVM_SCROLL
+        default:                                                ; a text box: lines
+            SendMessage(0xB6, 0, newPos - cur, h)               ; EM_LINESCROLL
+    }
+}
+
 ; ---- Release notes: a pop-up over the settings window, no title bar, Close or Esc ----------
 ShowNotes(owner) {
     md := ChangelogText()
@@ -2606,6 +2747,7 @@ ShowNotes(owner) {
     d.AddText("x24 y20 w512", "What's new")
     d.SetFont("s9 norm", "Segoe UI")
     ed := d.AddEdit("x24 y56 w512 h336 ReadOnly Multi VScroll -E0x200", text)
+    edSb := ScrollOverlay(d, ed)
     SendMessage(0xD3, 3, Round(10 * k) | (Round(10 * k) << 16), ed)   ; EM_SETMARGINS: room at the left and right
     AddBtn(d, "x436 y410 w100 h30", "Close").OnEvent("Click", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
@@ -2617,9 +2759,7 @@ ShowNotes(owner) {
     y := (NumGet(rc, 4, "int") + NumGet(rc, 12, "int") - Round(462 * k)) // 2
     owner.Opt("+Disabled")                                      ; stays put over the app until closed
     d.Show("x" x " y" y " w560 h462")
-    ed.GetPos(, , &ew, &eh)
-    DllCall("SetWindowRgn", "ptr", ed.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", ew + 1, "int", eh + 1
-        , "int", Round(14 * k), "int", Round(14 * k), "ptr"), "int", 1)
+    ScrollPlace(edSb)                                           ; our scroll bar; rounds the box too
     SendMessage(0xB1, 0, 0, ed)                                 ; EM_SETSEL: nothing selected
     WinWaitClose("ahk_id " hw)
     owner.Opt("-Disabled")
@@ -2855,6 +2995,7 @@ NewList(win, opts, cols, anchorFlags) {
         sp.role := "line"
         lv.seps.Push(sp)
     }
+    lv.sb := ScrollOverlay(win, lv)                            ; our scroll bar (FitList places it)
     return Anchor(lv, anchorFlags)
 }
 
@@ -3099,9 +3240,11 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
         b.OnEvent("Click", Pick.Bind(label))
     }
     ; details = {label, text}: that button opens the text in a box under the buttons (the window grows).
-    det := 0
+    det := 0, detSb := 0
     if opts && opts.HasOwnProp("details") && opts.details.text != "" {
         det := d.AddEdit("x24 y" (y + 44) " w" W " h240 ReadOnly Multi VScroll -E0x200 Hidden", opts.details.text)
+        detSb := ScrollOverlay(d, det)
+        detSb.Visible := false
     }
     d.OnEvent("Close", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
@@ -3121,7 +3264,10 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
     Pick(label, *) {
         if det && label = opts.details.label {            ; show / hide the details box
             det.Visible := !det.Visible
+            detSb.Visible := det.Visible
             SizeTitled(d)
+            if det.Visible
+                ScrollPlace(detSb)
             return
         }
         if opts && opts.HasOwnProp("keepOpen") && opts.keepOpen.Has(label)

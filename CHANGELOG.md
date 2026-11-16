@@ -1,9 +1,14 @@
 # Changelog
 
-## 2.1.7 (not released yet)
+## 2.1.8 (not released yet)
 
 **New**
 - Frosted glass for the dark look, on by default: a tinted, blurred see-through background with soft panels and outlined buttons. Turn it off with the switch under the theme cards (Settings > General > Look).
+
+**Improvements**
+- Buttons, cards and the mouse picture have smooth see-through corners; lists have rounded corners; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders no longer show tick marks.
+
+## 2.1.7 (not released yet)
 
 **Improvements**
 - Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.

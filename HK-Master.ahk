@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.7
+;@Ahk2Exe-SetVersion 2.1.8
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -29,7 +29,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.7"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.8"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
@@ -91,6 +91,7 @@ global cfg := LoadConfig()
 global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
+global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
@@ -136,6 +137,7 @@ ApplyAppMode()
 SetupCapsLock()
 SetupTray()
 OnMessage(0x20A, SliderWheel)          ; WM_MOUSEWHEEL
+OnMessage(0x2B, PicDrawItem)           ; WM_DRAWITEM: paints our drawn pictures
 RegisterHotstrings()
 
 if IniRead(INI, "State", "JustSaved", 0) = 1 {
@@ -1050,12 +1052,11 @@ ShowSettings(*) {
     trigNames := []
     for t in TRIGGERS()
         trigNames.Push(t[2])
-    trigDd := g.AddDropDownList("x135 y208 w178", trigNames)
+    trigSel := 1
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
-            trigDd.Choose(i)
-    if !trigDd.Value
-        trigDd.Choose(1)
+            trigSel := i
+    trigDd := DropBtn(g, "x135 y206 w178", trigNames, trigSel)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
@@ -1219,6 +1220,12 @@ ShowSettings(*) {
         }
         last := Max(60, lw - used - Round(24 * k))
         list.ModifyCol(fixed.Length + 1, last)
+        ; Round corners, like the buttons (a window region: Windows owns it once set).
+        wr := Buffer(16)
+        DllCall("GetWindowRect", "ptr", list.Hwnd, "ptr", wr)
+        rw := NumGet(wr, 8, "int") - NumGet(wr, 0, "int"), rh := NumGet(wr, 12, "int") - NumGet(wr, 4, "int")
+        d := Round(14 * k)
+        DllCall("SetWindowRgn", "ptr", list.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", rw + 1, "int", rh + 1, "int", d, "int", d, "ptr"), "int", 1)
         ; Column separators: a 1 px line at each column edge, the list's full height, on top.
         if !list.HasOwnProp("seps") || !list.seps.Length
             return
@@ -1261,7 +1268,7 @@ ShowSettings(*) {
     ; A slider with its number: label, bar, value.
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
-        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip", Min(hi, Max(lo, Round(value))))
+        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value))))
         vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit9", sl.Value)   ; type a value
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
@@ -1482,7 +1489,7 @@ ShowSettings(*) {
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
-        c.caps.trigger := TRIGGERS()[Max(1, trigDd.Value)][1]
+        c.caps.trigger := TRIGGERS()[Max(1, trigDd.sel)][1]
         for k, b in capsEd
             c.caps.%k% := KeyBoxValue(b)
         c.side.enabled := sideEn.Value
@@ -2165,44 +2172,35 @@ Gp_Canvas(w, h, bgHex, px := false) {
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)        ; anti-aliased edges
     DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", gr, "int", 4)      ; Half: shapes sit on the pixel grid, edges even on all sides
     DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", gr, "int", 4)    ; anti-aliased text
-    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", Gp_Argb(bgHex))
-    return {bmp: bmp, gr: gr, k: k}
+    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", 0)  ; transparent: PicDrawItem paints bgHex under it
+    return {bmp: bmp, gr: gr, k: k, w: px ? w : Round(w * k), h: px ? h : Round(h * k)}
 }
 
+; The canvas as a 32-bit bitmap with premultiplied alpha (what AlphaBlend wants): see-through
+; around the shapes, so on glass the corners are clear glass instead of black.
 Gp_Done(cv) {
-    hbm := 0
-    DllCall("gdiplus\GdipCreateHBITMAPFromBitmap", "ptr", cv.bmp, "ptr*", &hbm, "uint", 0xFF000000)
+    w := cv.w, h := cv.h
+    bi := Buffer(40, 0)                                      ; BITMAPINFOHEADER, 32 bits, top-down
+    NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
+    NumPut("ushort", 1, bi, 12), NumPut("ushort", 32, bi, 14)
+    bits := 0
+    hbm := DllCall("CreateDIBSection", "ptr", 0, "ptr", bi, "uint", 0, "ptr*", &bits, "ptr", 0, "uint", 0, "ptr")
+    if hbm {
+        rc := Buffer(16, 0), NumPut("int", w, rc, 8), NumPut("int", h, rc, 12)
+        bd := Buffer(16 + 2 * A_PtrSize, 0)                  ; BitmapData
+        if DllCall("gdiplus\GdipBitmapLockBits", "ptr", cv.bmp, "ptr", rc, "uint", 1, "int", 0xE200B, "ptr", bd) = 0 {   ; read, 32bppPARGB
+            stride := NumGet(bd, 8, "int"), scan := NumGet(bd, 16, "ptr")
+            if stride = w * 4
+                DllCall("RtlMoveMemory", "ptr", bits, "ptr", scan, "uptr", w * 4 * h)
+            else
+                Loop h
+                    DllCall("RtlMoveMemory", "ptr", bits + (A_Index - 1) * w * 4, "ptr", scan + (A_Index - 1) * stride, "uptr", w * 4)
+            DllCall("gdiplus\GdipBitmapUnlockBits", "ptr", cv.bmp, "ptr", bd)
+        }
+    }
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
     DllCall("gdiplus\GdipDisposeImage", "ptr", cv.bmp)
-    return GlassOn() ? NoAlpha(hbm) : hbm
-}
-
-; On glass a 32-bit picture is pasted solid, so its black background showed as black boxes.
-; Windows adds a pixel to the glass only when its alpha byte is 0, which is what plain GDI
-; writes, so the picture is copied into a 24-bit one (no alpha) and the old one is freed.
-NoAlpha(hbm) {
-    bm := Buffer(A_PtrSize = 8 ? 32 : 24, 0)                ; BITMAP
-    DllCall("GetObject", "ptr", hbm, "int", bm.Size, "ptr", bm)
-    w := NumGet(bm, 4, "int"), h := NumGet(bm, 8, "int")
-    bi := Buffer(40, 0)                                      ; BITMAPINFOHEADER, 24 bits, top-down
-    NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
-    NumPut("ushort", 1, bi, 12), NumPut("ushort", 24, bi, 14)
-    sdc := DllCall("GetDC", "ptr", 0, "ptr")
-    src := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
-    dst := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
-    bits := 0
-    out := DllCall("CreateDIBSection", "ptr", sdc, "ptr", bi, "uint", 0, "ptr*", &bits, "ptr", 0, "uint", 0, "ptr")
-    if !out {
-        DllCall("DeleteDC", "ptr", src), DllCall("DeleteDC", "ptr", dst), DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
-        return hbm
-    }
-    o1 := DllCall("SelectObject", "ptr", src, "ptr", hbm, "ptr")
-    o2 := DllCall("SelectObject", "ptr", dst, "ptr", out, "ptr")
-    DllCall("BitBlt", "ptr", dst, "int", 0, "int", 0, "int", w, "int", h, "ptr", src, "int", 0, "int", 0, "uint", 0x00CC0020)
-    DllCall("SelectObject", "ptr", src, "ptr", o1), DllCall("SelectObject", "ptr", dst, "ptr", o2)
-    DllCall("DeleteDC", "ptr", src), DllCall("DeleteDC", "ptr", dst), DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
-    DllCall("DeleteObject", "ptr", hbm)
-    return out
+    return hbm
 }
 
 ; Filled rounded rectangle (r = corner radius).
@@ -2259,8 +2257,8 @@ AddBtn(win, opts, text, primary := false) {
     w := RegExMatch(opts, "i)(?:^|\s)w(\d+)", &mw) ? Integer(mw[1]) : 90
     h := RegExMatch(opts, "i)(?:^|\s)h(\d+)", &mh) ? Integer(mh[1]) : 28
     opts := RegExReplace(opts, "i)(^|\s)[wh]\d+", "")          ; the size is passed separately
-    ; A text control showing a bitmap (SS_BITMAP): the bitmap is drawn 1:1, never stretched.
-    b := win.AddText(opts " w" w " h" h " +0xE +0x100", "")
+    ; A text control we paint ourselves (SS_OWNERDRAW, see PicDrawItem): the bitmap 1:1.
+    b := win.AddText(opts " w" w " h" h " +0xD +0x100", "")
     b.GetPos(, , &pw, &ph)                                     ; real size in pixels
     b.role := "btn", b.btnText := text, b.px := pw, b.py := ph, b.primary := primary, b.dis := false
     b.DefineProp("Text", {get: (self) => self.btnText, set: (self, v) => (self.btnText := v, BtnRender(self, false))})
@@ -2270,14 +2268,49 @@ AddBtn(win, opts, text, primary := false) {
     return b
 }
 
-; Show a bitmap in a SS_BITMAP control (and free the one it showed before).
+; Show a bitmap in one of our drawn pictures (an owner-drawn text control, SS_OWNERDRAW) and
+; free the one it showed before. It is painted at once by PicDrawItem.
 SetBitmap(ctrl, hbm) {
-    old := SendMessage(0x172, 0, hbm, ctrl)                    ; STM_SETIMAGE, IMAGE_BITMAP
-    if old
-        DllCall("DeleteObject", "ptr", old)
+    h := ctrl.Hwnd
+    if PICBMP.Has(h)
+        DllCall("DeleteObject", "ptr", PICBMP[h])
+    PICBMP[h] := hbm
+    if PICBMP.Count > 300                                      ; forget pictures of closed windows
+        for hw, bm in PICBMP.Clone()
+            if !DllCall("IsWindow", "ptr", hw)
+                DllCall("DeleteObject", "ptr", bm), PICBMP.Delete(hw)
+    DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x101)   ; INVALIDATE | UPDATENOW
 }
 
-BtnBitmap(pw, ph, text, hot, dis, primary) {
+; WM_DRAWITEM for our drawn pictures: the window colour first (black = clear glass), then the
+; picture blended on top with its own transparency (AlphaBlend), so round corners and soft
+; edges sit on whatever is behind them.
+PicDrawItem(wParam, lParam, msg, hwnd) {
+    P := A_PtrSize
+    if NumGet(lParam, 0, "uint") != 5                         ; ODT_STATIC
+        return
+    h := NumGet(lParam, P = 8 ? 24 : 20, "ptr")
+    if !PICBMP.Has(h)
+        return
+    hdc := NumGet(lParam, P = 8 ? 32 : 24, "ptr")
+    rc := lParam + (P = 8 ? 40 : 28)
+    c := Integer("0x" ThemeColors().bg)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    bm := Buffer(P = 8 ? 32 : 24, 0)
+    DllCall("GetObject", "ptr", PICBMP[h], "int", bm.Size, "ptr", bm)
+    bw := NumGet(bm, 4, "int"), bh := NumGet(bm, 8, "int")
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    old := DllCall("SelectObject", "ptr", mdc, "ptr", PICBMP[h], "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", hdc, "int", NumGet(rc, 0, "int"), "int", NumGet(rc, 4, "int"), "int", bw, "int", bh
+        , "ptr", mdc, "int", 0, "int", 0, "int", bw, "int", bh, "uint", 0x01FF0000)   ; AC_SRC_ALPHA, opacity 255
+    DllCall("SelectObject", "ptr", mdc, "ptr", old)
+    DllCall("DeleteDC", "ptr", mdc)
+    return 1
+}
+
+BtnBitmap(pw, ph, text, hot, dis, primary, chevron := false) {
     t := ThemeColors()
     k := A_ScreenDPI / 96
     w := pw / k, h := ph / k                                   ; drawing units
@@ -2299,14 +2332,47 @@ BtnBitmap(pw, ph, text, hot, dis, primary) {
         Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 8 - bw, fill)
     } else
         Gp_Round(cv, 0, 0, w, h, 8, fill)
-    Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1)
+    if chevron {                                               ; a drop-down: text on the left, a ˅ on the right
+        Gp_Text(cv, text, 12, 0, w - 40, h, textColor, 12, primary, 0)
+        Gp_Line(cv, w - 22, h / 2 - 2, w - 18, h / 2 + 2, textColor, 1.5)
+        Gp_Line(cv, w - 18, h / 2 + 2, w - 14, h / 2 - 2, textColor, 1.5)
+    } else
+        Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1)
     return Gp_Done(cv)
 }
 
 BtnRender(b, hot) {
     if b.HasOwnProp("drawFn")
         return b.drawFn.Call(b, hot)
-    SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary))
+    SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary, b.HasOwnProp("items")))
+}
+
+; A drop-down drawn like our buttons: the chosen item and a ˅; a click opens a menu of the items.
+; .sel = the chosen item's number.
+DropBtn(win, opts, items, sel) {
+    b := AddBtn(win, opts, items[sel])
+    b.items := items, b.sel := sel
+    BtnRender(b, false)                                        ; again, now with the ˅
+    b.OnEvent("Click", DropBtnMenu)
+    return b
+}
+
+DropBtnMenu(b, *) {
+    m := Menu()
+    for i, name in b.items {
+        m.Add(name, DropBtnPick.Bind(b, i))
+        if i = b.sel
+            m.Check(name)
+    }
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
+    CoordMode("Menu", "Screen")
+    m.Show(NumGet(rc, 0, "int"), NumGet(rc, 12, "int") + 2)
+}
+
+DropBtnPick(b, i, *) {
+    b.sel := i
+    b.Text := b.items[i]
 }
 
 BtnDisable(b) {
@@ -2333,7 +2399,7 @@ BtnHoverTick() {
 ; The mouse with its side buttons, drawn for the Mouse & keys page. The whole picture
 ; (labels + mouse) is centred in its 300-wide box.
 MouseArt(win, x, y) {
-    pic := win.AddText("x" x " y" y " w300 h215 +0xE", "")
+    pic := win.AddText("x" x " y" y " w300 h215 +0xD", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph
     pic.drawFn := MouseArtDraw
@@ -2362,7 +2428,7 @@ MouseArtDraw(pic, hot := false) {
 
 ; ---- Theme cards (Settings > General): a rounded square with an icon, the name under it ----
 ThemeCard(win, x, y, key, label, onPick) {
-    pic := win.AddText("x" x " y" y " w96 h80 +0xE +0x100", "")
+    pic := win.AddText("x" x " y" y " w96 h80 +0xD +0x100", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph, pic.key := key, pic.dis := false
     pic.drawFn := ThemeCardDraw
@@ -2416,7 +2482,7 @@ ThemeCardDraw(b, hot := false) {
 ; getOn() / canUse() are asked every time it is drawn; when canUse() is false it is grey,
 ; shows labelOff and ignores clicks (Frosted glass on the light theme).
 ToggleSwitch(win, x, y, getOn, canUse, label, labelOff, onFlip) {
-    pic := win.AddText("x" x " y" y " w40 h20 +0xE +0x100", "")
+    pic := win.AddText("x" x " y" y " w40 h20 +0xD +0x100", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph, pic.dis := false
     pic.getOn := getOn, pic.canUse := canUse, pic.label := label, pic.labelOff := labelOff

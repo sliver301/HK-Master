@@ -41,7 +41,7 @@ Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 | 🔄 **Auto-update** | Checks GitHub once a day and updates itself in one click. You can turn it off, or check by hand, in *General › Updates*. |
 | ⌨️ **Text shortcuts** | Type a short code like `@@` and get your full email address, phone number or any text. |
 
-Everything can be switched on/off and changed in the settings window (**Ctrl + Alt + H**, or double-click the tray icon). Light and dark themes included.
+Everything can be switched on/off and changed in the settings window (**Ctrl + Alt + H**, or double-click the tray icon). Light and dark themes included, with frosted glass for the dark theme (light coming soon).
 
 ## Install
 

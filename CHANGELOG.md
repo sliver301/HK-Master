@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.8 (not released yet)
+## 2.1.8
 
 **New**
 - Frosted glass for the dark look, on by default: a tinted, blurred see-through background with soft panels and outlined buttons. Turn it off with the switch under the theme cards (Settings > General > Look).
@@ -12,12 +12,17 @@
 - Buttons, cards and the mouse picture have smooth see-through corners; lists and text boxes have rounded corners and our own thin rounded scroll bars in the theme colours; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders are a thin line like the separators, without tick marks.
 - Drop-down and key menus are our own rounded menus in the app's colours, opening to the side; the slider number boxes are pills; the wheel over our scroll bars scrolls; Mouse & keys has a new layout (Caps Lock, Side scroll and Media Control on top, Side buttons below a line); the Side scroll switch moved there from Fast scroll. Each section's switch sits beside its header, and switching it off greys the section out.
 
-## 2.1.7 (not released yet)
+**Fixes**
+- Sideways scroll works again where 2.1.7 broke it: classic lists and text boxes get their own scroll-bar steps, other apps get real sideways-wheel input, and over Remote Desktop the other PC gets real sideways-wheel input.
+- Adding Ctrl while Shift is still held from a fast scroll now scrolls sideways (it zoomed before), and stops the glide.
+
+**Coming soon**
+- Frosted glass for the light look.
+
+## 2.1.7
 
 **Improvements**
-- Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.
-- Adding Ctrl while Shift is still held from a fast scroll now scrolls sideways (it zoomed before), and stops the glide.
-- Sideways scroll over Remote Desktop sends real sideways-wheel input to the other PC.
+- Sideways scroll (Ctrl + Shift + wheel) now sends real sideways-wheel input, so it works in every app that can scroll sideways.
 
 ## 2.1.6
 

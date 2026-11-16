@@ -9,7 +9,7 @@
 - "GitHub repo" button (Settings > General > Updates) opens the project page.
 
 **Improvements**
-- Buttons, cards and the mouse picture have smooth see-through corners; lists have rounded corners; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders no longer show tick marks.
+- Buttons, cards and the mouse picture have smooth see-through corners; lists have rounded corners; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders are a thin line like the separators, without tick marks.
 
 ## 2.1.7 (not released yet)
 

@@ -1173,7 +1173,7 @@ ShowSettings(*) {
     closeBtn.OnEvent("Click", CloseGui)
     g.OnEvent("Close", CloseGui)
     g.OnEvent("Escape", CloseGui)
-    TitleBar(g, AppTitle(), ["min", "max", "close"], true)
+    TitleBar(g, AppTitle(), ["min", "max", "close"], 850)    ; 850 = the width the page layout is made for
     ApplyTheme(g)
     if !InstalledHere()
         startEn.lbl.SetFont("c" ThemeColors().muted)          ; greyed out
@@ -1869,18 +1869,19 @@ SliderThumbDraw(ctrl, lp) {
     return 4                                       ; CDRF_SKIPDEFAULT
 }
 
-; The slider's track, drawn by us in one grey with round ends: Windows' own track is almost
-; white, so it vanished on the light theme. One plain colour on purpose: Windows repaints only
-; the strips around the old and new thumb, so a track filled up to the thumb left stripes.
+; The slider's track, drawn by us: Windows' own track is almost white, so it vanished on the
+; light theme. One plain colour on purpose: Windows repaints only the strips around the old and
+; new thumb, so a track filled up to the thumb left stripes.
 SliderTrackDraw(ctrl, hdc, l, t, r, b) {
-    th := ThemeColors()
-    h := 4, y := (t + b) / 2 - h / 2
-    Gp_Start()
-    gr := 0
-    DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
-    DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
-    GpPill(gr, l, y, r - l, h, th.HasOwnProp("glass") ? th.track : th.dark ? "6E6E6E" : "8A8A8A")
-    DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
+    ; A thin line in the separator colour, painted the same way as the separators (plain GDI),
+    ; so it looks just like the line under the tabs.
+    c := Integer("0x" ThemeColors().line)
+    h := Max(1, Round(A_ScreenDPI / 96)), y := (t + b) // 2
+    rc := Buffer(16)
+    NumPut("int", l, "int", y, "int", r, "int", y + h, rc)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
     return 4                                       ; CDRF_SKIPDEFAULT
 }
 
@@ -2420,6 +2421,7 @@ TitleBar(win, title, kinds := ["close"], baseW := 0) {
     SetTimer(BtnHoverTick, 40)
     TITLED[win.Hwnd] := {resize: baseW > 0, btns: btns, text: txt, icon: ico}
     DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)   ; FRAMECHANGED: frame off now
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
     if VerCompare(A_OSVersion, "10.0.22000") < 0 {               ; Windows 10: a 1-pixel frame strip keeps the shadow
         m := Buffer(16, 0)
         NumPut("int", 1, m, 8)                                  ; MARGINS.cyTopHeight

@@ -92,6 +92,7 @@ global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, 
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
 global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
+OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
@@ -137,7 +138,6 @@ ApplyAppMode()
 SetupCapsLock()
 SetupTray()
 OnMessage(0x20A, SliderWheel)          ; WM_MOUSEWHEEL
-OnMessage(0x2B, PicDrawItem)           ; WM_DRAWITEM: paints our drawn pictures
 RegisterHotstrings()
 
 if IniRead(INI, "State", "JustSaved", 0) = 1 {

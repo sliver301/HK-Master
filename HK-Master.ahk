@@ -1060,8 +1060,9 @@ ShowSettings(*) {
 
     ; ---- Page 3: mouse & keys ---------------------------------------------------
     SecHeader(g, "x20 y58 w300", "Caps Lock")
-    shiftEn := AddCheck(g, 20, 88, u.caps.shiftToggle, "Shift + Caps Lock turns it on / off", 290)
-    Muted(g.AddText("x42 y110 w280", "Caps Lock alone does nothing."))
+    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "On", 120)   ; beside its header, like the others
+    Muted(g.AddText("x20 y88 w300", "Shift + Caps Lock turns it on / off."))
+    Muted(g.AddText("x20 y110 w300", "Caps Lock alone does nothing."))
 
     SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
     fsH := AddCheck(g, 135, 171, u.fs.hscroll, "On", 120)

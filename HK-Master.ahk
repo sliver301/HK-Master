@@ -8,11 +8,13 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.7
+;@Ahk2Exe-SetVersion 2.1.8
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
 ;@Ahk2Exe-AddResource icons\tray-black.ico, 301
+; The release notes, shown in the app (Settings > General > Release notes).
+;@Ahk2Exe-AddResource CHANGELOG.md, CHANGELOG
 #SingleInstance Force
 SendMode "Input"
 SetWorkingDir A_ScriptDir
@@ -29,8 +31,9 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.7"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.8"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
+global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
@@ -91,6 +94,18 @@ global cfg := LoadConfig()
 global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
+global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
+global PICFIELD := Map()     ; drawn pictures that sit on a text box's colour, not the window's
+OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
+global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
+OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
+OnMessage(0x20A, ScrollWheel)       ; WM_MOUSEWHEEL over one of them: scroll its box
+global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
+global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
+global TB_H := 32                   ; its height (96-dpi units)
+OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
+OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
+global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
@@ -105,6 +120,7 @@ global ANCH := Map()          ; settings window: control hwnd -> how it follows 
 global BTN := Map()          ; hwnd -> button control
 global BTN_HOT := 0          ; the button currently highlighted
 global SLIDERS := Map()      ; settings window: slider hwnd -> {slider, value text, range}
+global SLIDER_OF := Map()    ; a slider's number box and its pill -> the slider hwnd (wheel over them)
 global PENDING := 0          ; settings kept while the window is rebuilt for a new theme
 global REOPEN := 0           ; page / position / size to restore after that
 global BASE_SIG := ""        ; settings window: the saved settings, to tell when something changed
@@ -178,6 +194,12 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf
 
 ; ---- Fast scroll (Shift + wheel) --------------------------------------------
+; Ctrl + Shift + wheel = horizontal scroll at normal speed, in any app. Checked first and on the
+; keys really held, so adding Ctrl while Shift is still down from a fast scroll (even mid-glide)
+; always scrolls sideways instead of letting the app see Ctrl + wheel (zoom).
+#HotIf cfg.fs.hscroll && GetKeyState("Ctrl", "P") && GetKeyState("Shift", "P")
+*WheelUp::HScroll(-1)
+*WheelDown::HScroll(1)
 ; Shift + wheel over a slider in the settings window: the slider glides, like fast scroll.
 #HotIf OverSlider()
 +WheelUp::SliderGlide(1)
@@ -185,10 +207,6 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf !fs.running && FastScrollAllowed()
 +WheelUp::FS_Start(1)
 +WheelDown::FS_Start(-1)
-; Ctrl + Shift + wheel = horizontal scroll at normal speed, in any app.
-#HotIf !fs.running && cfg.fs.hscroll
-^+WheelUp::HScroll(-1)
-^+WheelDown::HScroll(1)
 #HotIf fs.running
 *WheelUp::FS_Notch(1)
 *WheelDown::FS_Notch(-1)
@@ -408,7 +426,7 @@ FastScrollAllowed() {
         return false
     try {
         MouseGetPos(, , &win, &ctl, 2)
-        if ctl && SLIDERS.Has(ctl)      ; our own sliders: Shift + wheel moves them like the plain wheel (SliderWheel)
+        if ctl && SliderAt(ctl)         ; our own sliders: Shift + wheel moves them like the plain wheel (SliderWheel)
             return false
         return !OverCanvas(win, ctl)
     }
@@ -620,10 +638,30 @@ RealWheel(delta, upKey, downKey) {
     Send "{" (n > 0 ? upKey : downKey) " " Abs(n) "}"
 }
 
-; Horizontal scroll by one notch (Ctrl + Shift + wheel): always real sideways-wheel input, so it
-; works in every app that scrolls sideways with a tilt wheel or touchpad. Send (not {Blind}) lifts
-; the held Ctrl and Shift around it, so the app sees a plain sideways scroll, not a zoom.
+; Horizontal scroll by one notch (Ctrl + Shift + wheel).
+; - Classic controls with their own horizontal scroll bar (lists, text boxes, a parent panel):
+;   3 "line left / right" steps (WM_HSCROLL). Many of them ignore sideways-wheel input.
+; - Everything else: real sideways-wheel input (like a tilt wheel / touchpad), which works in
+;   apps that ignore posted messages. Send (not {Blind}) lifts the held Ctrl and Shift around it,
+;   so the app sees a plain sideways scroll, not a zoom.
 HScroll(dir) {
+    if fs.running
+        FS_Stop()                                 ; Ctrl added during a fast scroll: stop the glide
+    CoordMode "Mouse", "Screen"
+    MouseGetPos(, , &win, &ctl, 2)
+    remote := false
+    try remote := REMOTE_APPS.Has(WinGetProcessName(win))
+    h := remote ? 0 : (ctl ? ctl : win)            ; remote desktop: only real input reaches the other PC
+    while h {
+        if DllCall("GetWindowLong", "Ptr", h, "Int", -16, "Int") & 0x100000 {   ; WS_HSCROLL
+            Loop 3
+                PostMessage(0x114, dir > 0 ? 1 : 0, 0, h)    ; WM_HSCROLL: SB_LINERIGHT / SB_LINELEFT
+            return
+        }
+        if h = win
+            break
+        h := DllCall("GetParent", "Ptr", h, "Ptr")
+    }
     SendLevel 0
     Send "{" (dir > 0 ? "WheelRight" : "WheelLeft") "}"
 }
@@ -774,6 +812,9 @@ LoadConfig() {
     }
 
     c.theme := Rd("General", "Theme", "auto")        ; auto / light / dark
+    c.glass := Rd("General", "Glass", 1) = 1           ; frosted glass background, light or dark (on unless turned off)
+    if c.theme = "glass"                               ; a short-lived test build had Glass as a 4th theme
+        c.theme := "dark"
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -876,6 +917,7 @@ SaveConfig(c) {
 
     IniWrite(3, INI, "General", "ConfigVersion")
     IniWrite(c.theme, INI, "General", "Theme")
+    IniWrite(c.glass ? 1 : 0, INI, "General", "Glass")
     try IniDelete(INI, "Snippets")
     IniWrite(c.snippets.Length, INI, "Snippets", "Count")
     for i, s in c.snippets {
@@ -954,9 +996,11 @@ TogglePause(name, pos, menu) {
 ;  Settings window
 ; =============================================================================
 ShowSettings(*) {
-    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, UPD_LABEL
-    if SettingsGui {
-        SettingsGui.Show()
+    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, SLIDER_OF, UPD_LABEL
+    if SettingsGui {                                   ; already open: bring it back (not Show(): it would re-size it)
+        if DllCall("IsIconic", "ptr", SettingsGui.Hwnd)
+            DllCall("ShowWindow", "ptr", SettingsGui.Hwnd, "int", 9)    ; SW_RESTORE
+        try WinActivate("ahk_id " SettingsGui.Hwnd)
         return
     }
     u := PENDING ? PENDING : cfg          ; unsaved choices survive a theme change (see ThemeChanged)
@@ -964,7 +1008,7 @@ ShowSettings(*) {
     PENDING := 0
     ro := REOPEN
     REOPEN := 0
-    BTN := Map(), BTN_HOT := 0, SLIDERS := Map()
+    BTN := Map(), BTN_HOT := 0, SLIDERS := Map(), SLIDER_OF := Map()
 
     snips := []
     for s in u.snippets
@@ -998,6 +1042,8 @@ ShowSettings(*) {
 
     ; ---- Page 1: the illustrated guide (its own scrollable child window) --------
     guideWin := ShortcutGuide(g)
+    guideSb := ScrollOverlay(g, "guide")                      ; our scroll bar, shown with page 1
+    pages[1].Push(guideSb), known[guideSb.Hwnd] := true
 
     ; ---- Page 2: text shortcuts -------------------------------------------------
     SecHeader(g, "x20 y56 w810", "Type a short code, get the full text")
@@ -1013,51 +1059,71 @@ ShowSettings(*) {
     EndPage(2)
 
     ; ---- Page 3: mouse & keys ---------------------------------------------------
-    SecHeader(g, "x20 y58 w300", "Caps Lock")
-    shiftEn := AddCheck(g, 20, 88, u.caps.shiftToggle, "Shift + Caps Lock turns it on / off", 290)
-    Muted(g.AddText("x42 y110 w280", "Caps Lock alone does nothing."))
+    mk := PanelMark(g)
+    SecHeader(g, "x20 y58 w110", "Caps Lock")
+    ; Each section's switch sits beside its header; unticked, the section (its header too) is
+    ; greyed out and doesn't respond (PanelState). PanelMark / PanelSince collect its controls;
+    ; the switch itself stays as it is.
+    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "", 1, () => PanelState(pShift, shiftEn.Value))
+    Muted(g.AddText("x20 y88 w300", "Shift + Caps Lock turns it on / off."))
+    Muted(g.AddText("x20 y110 w300", "Caps Lock alone does nothing."))
+    pShift := PanelSince(g, mk)
 
-    SecHeader(g, "x20 y146 w300", "Media Control")
-    capsEn := AddCheck(g, 20, 176, u.caps.enabled, "On", 260)
-    g.AddText("x20 y212 w110", "Hold")
+    mk := PanelMark(g)
+    SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
+    fsH := AddCheck(g, 135, 171, u.fs.hscroll, "", 1, () => PanelState(pSideScroll, fsH.Value))
+    Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
+    pSideScroll := PanelSince(g, mk)
+
+    ; Media Control on the right; the space to its right is where its menus open.
+    mk := PanelMark(g)
+    SecHeader(g, "x345 y58 w110", "Media Control")
+    capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
+    g.AddText("x345 y88 w110", "Hold")
     trigNames := []
     for t in TRIGGERS()
         trigNames.Push(t[2])
-    trigDd := g.AddDropDownList("x135 y208 w178", trigNames)
+    trigSel := 1
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
-            trigDd.Choose(i)
-    if !trigDd.Value
-        trigDd.Choose(1)
+            trigSel := i
+    trigDd := DropBtn(g, "x460 y82 w178", trigNames, trigSel)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
-        y := 240 + (i - 1) * 32
-        g.AddText("x20 y" (y + 4) " w110", row[2])
-        capsEd[row[1]] := KeyBox(g, "x135 y" y " w150", u.caps.%row[1]%, true)
+        y := 116 + (i - 1) * 32
+        g.AddText("x345 y" (y + 4) " w110", row[2])
+        capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
     }
-    Muted(g.AddText("x20 y404 w300", "Click a box to change its key."))
+    pMedia := PanelSince(g, mk)
 
-    SecHeader(g, "x345 y58 w485", "Side buttons")
-    sideEn := AddCheck(g, 345, 88, u.side.enabled, "On  (not in dialogs and Explorer)", 460)
-    MouseArt(g, 437, 110)
+    ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
+    sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
+    mk := PanelMark(g)
+    SecHeader(g, "x20 y292 w110", "Side buttons")
+    sideEn := AddCheck(g, 135, 293, u.side.enabled, "", 1, () => PanelState(pSide, sideEn.Value))
+    Muted(g.AddText("x20 y318 w300", "Not in dialogs or File Explorer."))
+    MouseArt(g, 20, 338)
+
     sides := []
     for e in u.side.list
         sides.Push({app: e.app, back: e.back, fwd: e.fwd, both: e.both})
-    LvHeader(g, 345, 330, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
-    sideLv := NewList(g, "x345 y356 w485 h134", ["App", "Back", "Forward", "Both"], "wh")
+    LvHeader(g, 345, 292, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
+    sideLv := NewList(g, "x345 y318 w485 h172", ["App", "Back", "Forward", "Both"], "wh")
+    sideLv.off := false                                        ; true while Side buttons is switched off
     sBtn1 := AddBtn(g, "x345 y500 w90", "Add...")
     sBtn2 := AddBtn(g, "x+8 w90", "Edit...")
     sBtn3 := AddBtn(g, "x+8 w90", "Delete")
     sBtn1.OnEvent("Click", (*) => AddSide()), sBtn2.OnEvent("Click", (*) => EditSide()), sBtn3.OnEvent("Click", (*) => DelSide())
     Anchor(sBtn1, "y"), Anchor(sBtn2, "y"), Anchor(sBtn3, "y")
-    sideLv.OnEvent("DoubleClick", (ctrl, row) => (row ? EditSide() : 0))
+    sideLv.OnEvent("DoubleClick", (ctrl, row) => (row && !ctrl.off ? EditSide() : 0))
     RefreshSides()
+    pSide := PanelSince(g, mk)
     EndPage(3)
 
     ; ---- Page 4: fast scroll ----------------------------------------------------
-    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360)
-    fsH  := AddCheck(g, 430, 58, u.fs.hscroll, "Sideways scroll  (Ctrl + Shift + wheel)", 380)
+    mk := PanelMark(g)
+    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360, () => PanelState(pFast, fsEn.Value))
     SecHeader(g, "x20 y102 w400", "Speed")
     fsBoost := AddSlideRow("Kick per flick",        136, u.fs.boost, 5, 100)
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
@@ -1073,6 +1139,7 @@ ShowSettings(*) {
     Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps."))
     Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically."))
     RefreshEx()
+    pFast := PanelSince(g, mk)
     EndPage(4)
 
     ; ---- Page 5: general --------------------------------------------------------
@@ -1080,13 +1147,15 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
+    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => IsDarkTheme() && GlassSupported()
+        , "Frosted glass", "Frosted glass (dark look only)", PickGlass)
 
-    SecHeader(g, "x20 y220 w400", "Startup")
-    startEn := AddCheck(g, 20, 250, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
+    SecHeader(g, "x20 y232 w400", "Startup")
+    startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
         , "Start with Windows", 400, (*) => SetStartup(startEn.Value))   ; takes effect at once
     if !InstalledHere() {                                ; a portable copy can't start with Windows
         startEn.Enabled := false
-        Muted(g.AddText("x42 y274 w380", "Install the app to use this."))
+        Muted(g.AddText("x42 y285 w380", "Install the app to use this."))
     }
 
     SecHeader(g, "x20 y310 w400", "Install")
@@ -1106,9 +1175,10 @@ ShowSettings(*) {
     UPD_LABEL := g.AddText("x460 y92 w370", UpdateStatusText())
     autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
         , (*) => IniWrite(autoUpd.Value ? 1 : 0, INI, "General", "AutoUpdate"))      ; takes effect at once
-    updBtn := AddBtn(g, "x460 y152 w140", "Check now")
+    updBtn := AddBtn(g, "x460 y152 w116", "Check now")
     updBtn.OnEvent("Click", (*) => CheckForUpdates(true))
-    AddBtn(g, "x+8 w140", "Release notes").OnEvent("Click", (*) => Run(RELEASES_URL))
+    AddBtn(g, "x+8 w116", "Release notes").OnEvent("Click", (*) => ShowNotes(g))
+    AddBtn(g, "x+8 w116", "GitHub repo").OnEvent("Click", (*) => Run(REPO_URL))
 
     SecHeader(g, "x460 y220 w370", "Notifications")
     trayNote := AddCheck(g, 460, 250, IniRead(INI, "General", "HideTrayNotice", 0) != 1
@@ -1134,13 +1204,15 @@ ShowSettings(*) {
     closeBtn.OnEvent("Click", CloseGui)
     g.OnEvent("Close", CloseGui)
     g.OnEvent("Escape", CloseGui)
+    TitleBar(g, AppTitle(), ["min", "max", "close"], 850)    ; 850 = the width the page layout is made for
     ApplyTheme(g)
     if !InstalledHere()
         startEn.lbl.SetFont("c" ThemeColors().muted)          ; greyed out
+    Panels()
     ShowPage(ro ? ro.page : 1)
-    g.Show(ro ? "x" ro.x " y" ro.y " w" ro.w " h" ro.h : "w850 h600")
+    ShowTitled(g, ro ? "x" ro.x " y" ro.y : "", ro ? ro.w : 850, ro ? ro.h : 600 + TB_H)
     sc := A_ScreenDPI / 96
-    g.Opt("+MinSize" Round(850 * sc) "x" Round(600 * sc))
+    g.Opt("+MinSize" Round(850 * sc) "x" Round((600 + TB_H) * sc))
     g.OnEvent("Size", GuiSize)
     g.GetClientPos(, , &cw, &ch)
     GuiSize(g, 0, cw, ch)
@@ -1160,7 +1232,8 @@ ShowSettings(*) {
         if minMax = -1
             return
         k := A_ScreenDPI / 96
-        dw := Round(w / k) - 850, dh := Round(h / k) - 600
+        dw := Round(w / k) - 850, dh := Round(h / k) - 600 - TB_H     ; (TB_H: our title bar)
+        SendMessage(0x0B, 0, 0, gg)                     ; WM_SETREDRAW off: move everything, then paint once (no flashing)
         for hw, a in ANCH {
             if !DllCall("IsWindow", "ptr", hw)
                 continue
@@ -1169,13 +1242,18 @@ ShowSettings(*) {
                 , "int", Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k), "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
-        PlaceGuide(guideWin, 10, 48, 830 + dw, 498 + dh)
+        PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
+        ScrollPlace(guideSb)
+        if TITLED.Has(gg.Hwnd)                          ; maximise / restore picture
+            for tbtn in TITLED[gg.Hwnd].btns
+                TitleBtnDraw(tbtn)
         if curPage != 1
             DllCall("ShowWindow", "ptr", guideWin.Hwnd, "int", 0)
         GuideScroll(0)
         FitList(lv, [160])
         FitList(sideLv, [150, 110, 120])
         FitList(exLv, [])
+        SendMessage(0x0B, 1, 0, gg)                     ; WM_SETREDRAW on
         DllCall("RedrawWindow", "ptr", gg.Hwnd, "ptr", 0, "ptr", 0, "uint", 0x185)   ; repaint everything
     }
 
@@ -1190,6 +1268,14 @@ ShowSettings(*) {
         }
         last := Max(60, lw - used - Round(24 * k))
         list.ModifyCol(fixed.Length + 1, last)
+        ; Round corners, like the buttons (a window region: Windows owns it once set).
+        wr := Buffer(16)
+        DllCall("GetWindowRect", "ptr", list.Hwnd, "ptr", wr)
+        rw := NumGet(wr, 8, "int") - NumGet(wr, 0, "int"), rh := NumGet(wr, 12, "int") - NumGet(wr, 4, "int")
+        d := Round(14 * k)
+        DllCall("SetWindowRgn", "ptr", list.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", rw + 1, "int", rh + 1, "int", d, "int", d, "ptr"), "int", 1)
+        if list.HasOwnProp("sb")
+            ScrollPlace(list.sb)                               ; (narrows that region by the scroll bar)
         ; Column separators: a 1 px line at each column edge, the list's full height, on top.
         if !list.HasOwnProp("seps") || !list.seps.Length
             return
@@ -1232,12 +1318,13 @@ ShowSettings(*) {
     ; A slider with its number: label, bar, value.
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
-        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip", Min(hi, Max(lo, Round(value))))
-        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit9", sl.Value)   ; type a value
+        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value))))
+        vt := PillBox(g, 565, y + 2, 60, 24, sl.Value)            ; type a value
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
         SLIDERS[sl.Hwnd] := {sl: sl, vt: vt, lo: lo, hi: hi}
+        SLIDER_OF[vt.Hwnd] := sl.Hwnd, SLIDER_OF[vt.pill.Hwnd] := sl.Hwnd   ; the wheel over the box moves it too
         sl.OnNotify(-12, SliderThumbDraw)              ; NM_CUSTOMDRAW: our own pill-shaped thumb
         return sl
     }
@@ -1272,12 +1359,29 @@ ShowSettings(*) {
             return
         cfg.theme := key
         IniWrite(key, INI, "General", "Theme")
+        FadeRetheme()
+    }
+
+    ; The frosted-glass switch was flipped: same in-place recolour as a theme change.
+    PickGlass(on) {
+        cfg.glass := on
+        IniWrite(on ? 1 : 0, INI, "General", "Glass")
+        FadeRetheme()
+    }
+
+    FadeRetheme() {
         covers := [FadeCover(g)]                      ; the old look stays on top while we recolour
         for hd, dlg in APPDLGS
             covers.Push(FadeCover(dlg))
         ApplyAppMode()
         Retheme()
         FadeAway(covers)
+    }
+
+    ; Each section greyed out or not, by its switch.
+    Panels() {
+        PanelState(pShift, shiftEn.Value), PanelState(pSideScroll, fsH.Value), PanelState(pMedia, capsEn.Value)
+        PanelState(pSide, sideEn.Value), PanelState(pFast, fsEn.Value)
     }
 
     Retheme() {
@@ -1305,6 +1409,7 @@ ShowSettings(*) {
         DllCall("uxtheme\SetWindowTheme", "ptr", guideWin.Hwnd, t.dark ? "str" : "ptr", t.dark ? "DarkMode_Explorer" : 0, "ptr", 0)
         if !InstalledHere()
             startEn.lbl.SetFont("c" t.muted)
+        Panels()                                          ; greyed-out sections stay greyed out
         ShowPage(curPage)                                 ; tab colours
         DllCall("SetWindowPos", "ptr", g.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)  ; repaint the title bar
         g.GetClientPos(, , &cw4, &ch4)
@@ -1438,10 +1543,11 @@ ShowSettings(*) {
     BuildConfig() {
         c := {snippets: snips, caps: {}, side: {}, fs: {}}
         c.theme := cfg.theme
+        c.glass := cfg.glass
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
-        c.caps.trigger := TRIGGERS()[Max(1, trigDd.Value)][1]
+        c.caps.trigger := TRIGGERS()[Max(1, trigDd.sel)][1]
         for k, b in capsEd
             c.caps.%k% := KeyBoxValue(b)
         c.side.enabled := sideEn.Value
@@ -1478,7 +1584,7 @@ ShowSettings(*) {
         global SettingsGui
         SetTimer(DirtyTick, 0)
         FS_Stop()                                  ; no glide may outlive the window it scrolls
-        SetTimer(SliderGlideTick, 0), SLIDERS.Clear()
+        SetTimer(SliderGlideTick, 0), SLIDERS.Clear(), SLIDER_OF.Clear()
         SettingsGui := 0
         GUIDE.hwnd := 0
         g.Destroy()
@@ -1644,13 +1750,20 @@ SliderWheel(wParam, lParam, msg, hwnd) {
     return 0
 }
 
-; The mouse is over one of the settings window's sliders.
+; The slider a control belongs to (the slider itself, its number box or the box's pill), or 0.
+SliderAt(h) {
+    s := !h ? 0 : SLIDERS.Has(h) ? h : SLIDER_OF.Has(h) ? SLIDER_OF[h] : 0
+    return s && DllCall("IsWindowEnabled", "ptr", s) ? s : 0      ; a greyed-out slider doesn't move
+}
+
+; The mouse is over one of the settings window's sliders (or its number box).
 OverSlider() {
     if !SLIDERS.Count
         return false
     try {
         MouseGetPos(, , , &h, 2)
-        return h && SLIDERS.Has(h) && DllCall("IsWindowVisible", "ptr", h)
+        h := SliderAt(h)
+        return h && DllCall("IsWindowVisible", "ptr", h)
     }
     return false
 }
@@ -1659,7 +1772,7 @@ OverSlider() {
 ; gliding and slows down (faster when Shift is let go), then lands on a multiple of 5.
 SliderGlide(dir) {
     MouseGetPos(, , , &h, 2)
-    if !SLIDERS.Has(h)
+    if !(h := SliderAt(h))
         return
     e := SLIDERS[h]
     if SLGLIDE.h != h || SLGLIDE.v * dir < 0                 ; new slider or reversed: start fresh
@@ -1788,6 +1901,8 @@ SliderThumbDraw(ctrl, lp) {
     hot := (mx >= l && mx < r && my >= t && my < b) || (state & 0x41)    ; under the mouse / pressed / hot
     th := ThemeColors()
     c := hot ? (th.dark ? "FFFFFF" : "1B1B1B") : th.accent
+    if !DllCall("IsWindowEnabled", "ptr", ctrl.Hwnd)              ; greyed-out section
+        c := th.dark ? "4A4D58" : "C2C2C2"
     ; Smooth (anti-aliased) pill with GDI+, straight onto the slider's drawing surface.
     Gp_Start()
     w := r - l, h := b - t
@@ -1808,18 +1923,19 @@ SliderThumbDraw(ctrl, lp) {
     return 4                                       ; CDRF_SKIPDEFAULT
 }
 
-; The slider's track, drawn by us in one grey with round ends: Windows' own track is almost
-; white, so it vanished on the light theme. One plain colour on purpose: Windows repaints only
-; the strips around the old and new thumb, so a track filled up to the thumb left stripes.
+; The slider's track, drawn by us: Windows' own track is almost white, so it vanished on the
+; light theme. One plain colour on purpose: Windows repaints only the strips around the old and
+; new thumb, so a track filled up to the thumb left stripes.
 SliderTrackDraw(ctrl, hdc, l, t, r, b) {
-    th := ThemeColors()
-    h := 4, y := (t + b) / 2 - h / 2
-    Gp_Start()
-    gr := 0
-    DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
-    DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
-    GpPill(gr, l, y, r - l, h, th.dark ? "6E6E6E" : "8A8A8A")
-    DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
+    ; A thin line in the separator colour, painted the same way as the separators (plain GDI),
+    ; so it looks just like the line under the tabs.
+    c := Integer("0x" ThemeColors().line)
+    h := Max(1, Round(A_ScreenDPI / 96)), y := (t + b) // 2
+    rc := Buffer(16)
+    NumPut("int", l, "int", y, "int", r, "int", y + h, rc)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
     return 4                                       ; CDRF_SKIPDEFAULT
 }
 
@@ -1874,7 +1990,7 @@ SetSlide(sl, v) {
 ; Move the slider under the mouse to the next multiple of 5 up (dir 1) or down (-1): 33 -> 35 / 30.
 SliderStep(dir) {
     MouseGetPos(, , , &h, 2)
-    if !SLIDERS.Has(h)
+    if !(h := SliderAt(h))
         return
     e := SLIDERS[h]
     cur := e.sl.Value
@@ -1986,9 +2102,51 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
+    ; Frosted glass (dark look only), the same recipe as Islam's "Claude Dual Logins" app.
+    ; Windows ADDS every colour we paint to the tinted blur behind the window: pure black (bg)
+    ; is clear glass, very dark colours are soft tints, and text has to be light. So these are
+    ; much darker than the solid Dark colours on purpose. edge = outline of drawn buttons.
+    if GlassOn()
+        return {dark: true, glass: true, bg: "000000", fg: "F3F4F8", muted: "A3A6B2", field: "101116", line: "2C2E38"
+            , btn: "1E1F27", btnHot: "30323D", edge: "424450", track: "16171C", accent: "4CC2FF"
+            , pri: "2254C4", priHot: "3865CB", priEdge: "4972CE", priText: "F3F4F8"
+            , danger: "C83C34", dangerHot: "CD4F48", dangerEdge: "D15F58", dis: "24252D"}
     return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
+}
+
+; Frosted glass (Settings > General > Look, on by default) for the dark look. Light can't
+; have it: on glass every colour is added to the blur, so dark text on light glass vanishes.
+; Needs Windows 10 1803 or newer.
+GlassOn() => cfg.glass && IsDarkTheme() && GlassSupported()
+GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
+
+; Turns the frosted backdrop on or off for a top-level window (child windows, like the
+; Shortcuts page, are part of their parent's picture and follow it). An unnamed Windows
+; function (SetWindowCompositionAttribute, WCA_ACCENT_POLICY = 19) puts a blur behind the
+; window with our tint over it (flag 2). Windows 11: acrylic (4), tint 0xD8140F0C (AABBGGRR,
+; a blue-black at 85%), exactly as in the Claude Dual Logins app. Windows 10: the plain blur
+; (3) with the same tint, because acrylic lags there when the window is dragged.
+SetGlass(win, on) {
+    h := win.Hwnd
+    if !on && !GLASS_WINS.Has(h)                       ; never had it: leave Windows' default alone
+        return
+    if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
+        return
+    ap := Buffer(16, 0)
+    NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
+    NumPut("int", on ? 2 : 0, ap, 4)
+    NumPut("uint", on ? 0xD8140F0C : 0, ap, 8)
+    wd := Buffer(A_PtrSize * 3, 0)
+    NumPut("int", 19, wd, 0)
+    NumPut("ptr", ap.Ptr, wd, A_PtrSize)
+    NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+    try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
+    if on
+        GLASS_WINS[h] := 1
+    else
+        GLASS_WINS.Delete(h)
 }
 
 ; Dark or light menus (tray menu, pop-up menus) for the whole app. Uses two unnamed Windows
@@ -2006,6 +2164,17 @@ ApplyAppMode() {
 ApplyTheme(win) {
     t := ThemeColors()
     win.BackColor := t.bg
+    SetGlass(win, t.HasOwnProp("glass"))
+    if TITLED.Has(win.Hwnd) || POPUPS.Has(win.Hwnd) {
+        ; Windows 11: the thin window border in our outline colour (34 = DWMWA_BORDER_COLOR, BBGGRR).
+        c := Integer("0x" (t.HasOwnProp("edge") ? t.edge : t.line))
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 34, "uint*", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "int", 4)
+    }
+    if TITLED.Has(win.Hwnd) && TITLED[win.Hwnd].icon {          ; the title bar icon follows the theme
+        hi := LoadAppIcon(t.dark ? "white" : "black", Round(16 * A_ScreenDPI / 96))
+        if hi
+            try TITLED[win.Hwnd].icon.Value := "HICON:" hi
+    }
     try {                                                                       ; dark or light title bar
         if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
             DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
@@ -2081,16 +2250,48 @@ Gp_Canvas(w, h, bgHex, px := false) {
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)        ; anti-aliased edges
     DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", gr, "int", 4)      ; Half: shapes sit on the pixel grid, edges even on all sides
     DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", gr, "int", 4)    ; anti-aliased text
-    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", Gp_Argb(bgHex))
-    return {bmp: bmp, gr: gr, k: k}
+    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", 0)  ; transparent: PicDrawItem paints bgHex under it
+    return {bmp: bmp, gr: gr, k: k, w: px ? w : Round(w * k), h: px ? h : Round(h * k)}
 }
 
-Gp_Done(cv) {
-    hbm := 0
-    DllCall("gdiplus\GdipCreateHBITMAPFromBitmap", "ptr", cv.bmp, "ptr*", &hbm, "uint", 0xFF000000)
+; The canvas as a 32-bit bitmap with premultiplied alpha (what AlphaBlend wants): see-through
+; around the shapes, so on glass the corners are clear glass instead of black.
+; additive: on glass, the picture is mixed into the glass the way Windows paints text boxes and
+; lists (colour added, alpha 0) instead of covering it, so the two look the same.
+Gp_Done(cv, additive := false) {
+    w := cv.w, h := cv.h
+    bi := Buffer(40, 0)                                      ; BITMAPINFOHEADER, 32 bits, top-down
+    NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
+    NumPut("ushort", 1, bi, 12), NumPut("ushort", 32, bi, 14)
+    bits := 0
+    hbm := DllCall("CreateDIBSection", "ptr", 0, "ptr", bi, "uint", 0, "ptr*", &bits, "ptr", 0, "uint", 0, "ptr")
+    if hbm {
+        rc := Buffer(16, 0), NumPut("int", w, rc, 8), NumPut("int", h, rc, 12)
+        bd := Buffer(16 + 2 * A_PtrSize, 0)                  ; BitmapData
+        if DllCall("gdiplus\GdipBitmapLockBits", "ptr", cv.bmp, "ptr", rc, "uint", 1, "int", 0xE200B, "ptr", bd) = 0 {   ; read, 32bppPARGB
+            stride := NumGet(bd, 8, "int"), scan := NumGet(bd, 16, "ptr")
+            if stride = w * 4
+                DllCall("RtlMoveMemory", "ptr", bits, "ptr", scan, "uptr", w * 4 * h)
+            else
+                Loop h
+                    DllCall("RtlMoveMemory", "ptr", bits + (A_Index - 1) * w * 4, "ptr", scan + (A_Index - 1) * stride, "uptr", w * 4)
+            DllCall("gdiplus\GdipBitmapUnlockBits", "ptr", cv.bmp, "ptr", bd)
+            if additive
+                Loop w * h
+                    NumPut("uchar", 0, bits, A_Index * 4 - 1)
+        }
+    }
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
     DllCall("gdiplus\GdipDisposeImage", "ptr", cv.bmp)
     return hbm
+}
+
+; Filled rectangle.
+Gp_Rect(cv, x, y, w, h, hex) {
+    k := cv.k, br := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
+    DllCall("gdiplus\GdipFillRectangle", "ptr", cv.gr, "ptr", br, "float", x * k, "float", y * k, "float", w * k, "float", h * k)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
 }
 
 ; Filled rounded rectangle (r = corner radius).
@@ -2120,7 +2321,9 @@ Gp_Line(cv, x1, y1, x2, y2, hex, width := 1) {
 }
 
 ; Text inside the box x, y, w, h, centred vertically. align: 0 left, 1 centre, 2 right. px = text height in pixels.
-Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1) {
+; hint: 3 = smoothed and snapped to the pixel grid (any background), 5 = ClearType (only on a
+; solid fill, like a button's).
+Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1, hint := 3) {
     k := cv.k
     fam := 0, font := 0, fmt := 0, br := 0
     DllCall("gdiplus\GdipCreateFontFamilyFromName", "str", "Segoe UI", "ptr", 0, "ptr*", &fam)
@@ -2131,9 +2334,14 @@ Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1) {
     DllCall("gdiplus\GdipSetStringFormatFlags", "ptr", fmt, "int", 0x1000)       ; no wrapping
     DllCall("gdiplus\GdipSetStringFormatTrimming", "ptr", fmt, "int", 3)         ; "..." when too long
     DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
-    rc := Buffer(16, 0)
-    NumPut("float", x * k, "float", y * k, "float", w * k, "float", h * k, rc)
+    rc := Buffer(16, 0)                                        ; whole pixels: no half-pixel blur
+    NumPut("float", Round(x * k), "float", Round(y * k), "float", Round(w * k), "float", Round(h * k), rc)
+    ; Text was soft: the canvas draws shapes half a pixel offset (PixelOffsetMode Half) and with
+    ; plain smoothing, which blurs small letters. Text gets no offset and a grid-fitted hint.
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", cv.gr, "int", 0)
+    DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", cv.gr, "int", hint)
     DllCall("gdiplus\GdipDrawString", "ptr", cv.gr, "str", text, "int", -1, "ptr", font, "ptr", rc, "ptr", fmt, "ptr", br)
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", cv.gr, "int", 4)
     DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
     DllCall("gdiplus\GdipDeleteStringFormat", "ptr", fmt)
     DllCall("gdiplus\GdipDeleteFont", "ptr", font)
@@ -2147,8 +2355,8 @@ AddBtn(win, opts, text, primary := false) {
     w := RegExMatch(opts, "i)(?:^|\s)w(\d+)", &mw) ? Integer(mw[1]) : 90
     h := RegExMatch(opts, "i)(?:^|\s)h(\d+)", &mh) ? Integer(mh[1]) : 28
     opts := RegExReplace(opts, "i)(^|\s)[wh]\d+", "")          ; the size is passed separately
-    ; A text control showing a bitmap (SS_BITMAP): the bitmap is drawn 1:1, never stretched.
-    b := win.AddText(opts " w" w " h" h " +0xE +0x100", "")
+    ; A text control we paint ourselves (SS_OWNERDRAW, see PicDrawItem): the bitmap 1:1.
+    b := win.AddText(opts " w" w " h" h " +0xD +0x100", "")
     b.GetPos(, , &pw, &ph)                                     ; real size in pixels
     b.role := "btn", b.btnText := text, b.px := pw, b.py := ph, b.primary := primary, b.dis := false
     b.DefineProp("Text", {get: (self) => self.btnText, set: (self, v) => (self.btnText := v, BtnRender(self, false))})
@@ -2158,36 +2366,665 @@ AddBtn(win, opts, text, primary := false) {
     return b
 }
 
-; Show a bitmap in a SS_BITMAP control (and free the one it showed before).
+; Show a bitmap in one of our drawn pictures (an owner-drawn text control, SS_OWNERDRAW) and
+; free the one it showed before. It is painted at once by PicDrawItem.
 SetBitmap(ctrl, hbm) {
-    old := SendMessage(0x172, 0, hbm, ctrl)                    ; STM_SETIMAGE, IMAGE_BITMAP
-    if old
-        DllCall("DeleteObject", "ptr", old)
+    h := ctrl.Hwnd
+    if PICBMP.Has(h)
+        DllCall("DeleteObject", "ptr", PICBMP[h])
+    PICBMP[h] := hbm
+    if PICBMP.Count > 300                                      ; forget pictures of closed windows
+        for hw, bm in PICBMP.Clone()
+            if !DllCall("IsWindow", "ptr", hw)
+                DllCall("DeleteObject", "ptr", bm), PICBMP.Delete(hw)
+    DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x101)   ; INVALIDATE | UPDATENOW
 }
 
-BtnBitmap(pw, ph, text, hot, dis, primary) {
+; WM_DRAWITEM for our drawn pictures: the window colour first (black = clear glass), then the
+; picture blended on top with its own transparency (AlphaBlend), so round corners and soft
+; edges sit on whatever is behind them.
+PicDrawItem(wParam, lParam, msg, hwnd) {
+    P := A_PtrSize
+    if NumGet(lParam, 0, "uint") != 5                         ; ODT_STATIC
+        return
+    h := NumGet(lParam, P = 8 ? 24 : 20, "ptr")
+    if !PICBMP.Has(h)
+        return
+    hdc := NumGet(lParam, P = 8 ? 32 : 24, "ptr")
+    rc := lParam + (P = 8 ? 40 : 28)
+    t := ThemeColors()
+    c := Integer("0x" (PICFIELD.Has(h) ? t.field : t.bg))
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    bm := Buffer(P = 8 ? 32 : 24, 0)
+    DllCall("GetObject", "ptr", PICBMP[h], "int", bm.Size, "ptr", bm)
+    bw := NumGet(bm, 4, "int"), bh := NumGet(bm, 8, "int")
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    old := DllCall("SelectObject", "ptr", mdc, "ptr", PICBMP[h], "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", hdc, "int", NumGet(rc, 0, "int"), "int", NumGet(rc, 4, "int"), "int", bw, "int", bh
+        , "ptr", mdc, "int", 0, "int", 0, "int", bw, "int", bh, "uint", 0x01FF0000)   ; AC_SRC_ALPHA, opacity 255
+    DllCall("SelectObject", "ptr", mdc, "ptr", old)
+    DllCall("DeleteDC", "ptr", mdc)
+    return 1
+}
+
+BtnBitmap(pw, ph, text, hot, dis, primary, chevron := false) {
     t := ThemeColors()
     k := A_ScreenDPI / 96
     w := pw / k, h := ph / k                                   ; drawing units
     ; primary: "danger" = red (Cancel). A disabled button is plain grey, never coloured.
+    glass := t.HasOwnProp("glass")
+    edge := ""
     if dis
-        fill := t.btn, textColor := t.muted
+        fill := glass ? t.dis : t.btn, textColor := t.muted
     else if primary = "danger"
-        fill := hot ? "E0453A" : "C42B1C", textColor := "FFFFFF"
+        fill := glass ? (hot ? t.dangerHot : t.danger) : (hot ? "E0453A" : "C42B1C"), textColor := "FFFFFF", edge := glass ? t.dangerEdge : ""
     else if primary
-        fill := hot ? t.priHot : t.pri, textColor := t.priText
+        fill := hot ? t.priHot : t.pri, textColor := t.priText, edge := glass ? t.priEdge : ""
     else
-        fill := hot ? t.btnHot : t.btn, textColor := t.fg
+        fill := hot ? t.btnHot : t.btn, textColor := t.fg, edge := glass ? t.edge : ""
     cv := Gp_Canvas(pw, ph, t.bg, true)
-    Gp_Round(cv, 0, 0, w, h, 8, fill)
-    Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1)
+    if edge != "" {                                            ; glass: a 1-pixel outline, like the Python app
+        bw := Round(cv.k) / cv.k
+        Gp_Round(cv, 0, 0, w, h, 8, edge)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 8 - bw, fill)
+    } else
+        Gp_Round(cv, 0, 0, w, h, 8, fill)
+    if chevron {                                               ; a drop-down: text on the left, a ˅ on the right
+        Gp_Text(cv, text, 12, 0, w - 40, h, textColor, 12, primary, 0, 5)
+        Gp_Line(cv, w - 22, h / 2 - 2, w - 18, h / 2 + 2, textColor, 1.5)
+        Gp_Line(cv, w - 18, h / 2 + 2, w - 14, h / 2 - 2, textColor, 1.5)
+    } else
+        Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1, 5)
     return Gp_Done(cv)
 }
 
 BtnRender(b, hot) {
     if b.HasOwnProp("drawFn")
         return b.drawFn.Call(b, hot)
-    SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary))
+    SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary, b.HasOwnProp("items")))
+}
+
+; ---- Our own title bar --------------------------------------------------------------------
+; The Windows title bar can't match the glass or our buttons, so windows get our own: the app
+; icon, the title and minimise / maximise / close buttons drawn like the rest of the app.
+; Call TitleBar after all controls are added (it moves them down to make room), then
+; ShowTitled instead of Show. The Windows frame is removed (TitledNcCalc) but the window keeps
+; its title-bar style, so dragging, snapping, double-click to maximise, the minimise animation
+; and (baseW: resizable windows, laid out for that width) resizing at the edges still work
+; (TitledHitTest).
+TitleBar(win, title, kinds := ["close"], baseW := 0) {
+    for hw in TITLED.Clone()                                    ; forget closed windows
+        if !DllCall("IsWindow", "ptr", hw)
+            TITLED.Delete(hw)
+    k := A_ScreenDPI / 96, dy := Round(TB_H * k)
+    for hwnd, c in win {                                        ; everything moves down
+        c.GetPos(&cx, &cy)
+        DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", cx, "int", cy + dy, "int", 0, "int", 0, "uint", 0x15)
+        if ANCH.Has(hwnd)
+            ANCH[hwnd].y += TB_H
+    }
+    t := ThemeColors()
+    ico := 0
+    hi := LoadAppIcon(t.dark ? "white" : "black", Round(16 * k))
+    if hi
+        try ico := win.AddPicture("x12 y8 w16 h16", "HICON:" hi)
+    win.SetFont("s9 norm", "Segoe UI")
+    txt := win.AddText("x" (ico ? 38 : 14) " y0 w" (baseW ? 400 : 150) " h" TB_H " +0x200", title)   ; 0x200 = centred vertically
+    btns := []
+    for i, kind in kinds {
+        b := win.AddText("x" (baseW ? baseW - (kinds.Length - i + 1) * 46 : 0) " y0 w46 h" TB_H " +0xD +0x100", "")
+        b.GetPos(, , &pw, &ph)
+        b.px := pw, b.py := ph, b.kind := kind, b.dis := false, b.win := win.Hwnd
+        b.drawFn := TitleBtnDraw
+        BTN[b.Hwnd] := b                                        ; lighter under the mouse
+        b.OnEvent("Click", TitleBtnClick)
+        if baseW
+            Anchor(b, "x")                                      ; stays at the right edge
+        TitleBtnDraw(b)
+        btns.Push(b)
+    }
+    SetTimer(BtnHoverTick, 40)
+    TITLED[win.Hwnd] := {resize: baseW > 0, btns: btns, text: txt, icon: ico}
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)   ; FRAMECHANGED: frame off now
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
+    if VerCompare(A_OSVersion, "10.0.22000") < 0 {               ; Windows 10: a 1-pixel frame strip keeps the shadow
+        m := Buffer(16, 0)
+        NumPut("int", 1, m, 8)                                  ; MARGINS.cyTopHeight
+        try DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", win.Hwnd, "ptr", m)
+    }
+}
+
+; Show a TitleBar window. pos = "x.. y.." or "" (centred); cw / ch = its size (96-dpi units),
+; or 0 = fit the controls. AHK sizes windows as if they had the Windows frame, so the size is
+; set here, then the title bar buttons go to the right edge.
+ShowTitled(win, pos := "", cw := 0, ch := 0) {
+    k := A_ScreenDPI / 96
+    win.Show(Trim(pos " Hide " (cw ? "w" cw " h" ch : "AutoSize")))
+    if cw
+        nw := Round(cw * k), nh := Round(ch * k)
+    else
+        TitledFit(win, &nw, &nh)
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", win.Hwnd, "ptr", rc)
+    wx := NumGet(rc, 0, "int"), wy := NumGet(rc, 4, "int")
+    if pos = "" {                                               ; AHK centred its own size: centre ours
+        wx += (NumGet(rc, 8, "int") - wx - nw) // 2
+        wy += (NumGet(rc, 12, "int") - wy - nh) // 2
+    }
+    TitlePlace(win, nw)
+    ; Size, place and show in one step. (win.Show() here would size the window again as if it
+    ; had the Windows frame: that left empty space at the bottom and right.)
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", wx, "int", wy, "int", nw, "int", nh, "uint", 0x44)   ; NOZORDER | SHOWWINDOW
+    DllCall("SetForegroundWindow", "ptr", win.Hwnd)
+}
+
+; Fit a TitleBar window to its controls again (a box was shown or hidden), keeping its place.
+SizeTitled(win) {
+    TitledFit(win, &nw, &nh)
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", nw, "int", nh, "uint", 0x16)
+    TitlePlace(win, nw)
+}
+
+; The size that fits the visible controls, with the left margin on the right and at the bottom.
+TitledFit(win, &nw, &nh) {
+    tb := TITLED.Has(win.Hwnd) ? TITLED[win.Hwnd] : 0
+    skip := Map()
+    if tb {
+        for b in tb.btns
+            skip[b.Hwnd] := 1
+        skip[tb.text.Hwnd] := 1
+        if tb.icon
+            skip[tb.icon.Hwnd] := 1
+    }
+    minX := 99999, maxR := 0, maxB := 0
+    for hwnd, c in win {
+        if skip.Has(hwnd) || SCROLLS.Has(hwnd) || !(DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x10000000)   ; WS_VISIBLE
+            continue
+        c.GetPos(&cx, &cy, &cw, &ch)
+        minX := Min(minX, cx), maxR := Max(maxR, cx + cw), maxB := Max(maxB, cy + ch)
+    }
+    pad := minX = 99999 ? 0 : minX
+    nw := maxR + pad, nh := maxB + pad
+}
+
+; Fixed-size windows: the title bar buttons at the right edge, the title up to them.
+TitlePlace(win, nw) {
+    if !TITLED.Has(win.Hwnd) || TITLED[win.Hwnd].resize
+        return
+    tb := TITLED[win.Hwnd]
+    k := A_ScreenDPI / 96, bw := Round(46 * k)
+    for i, b in tb.btns
+        DllCall("SetWindowPos", "ptr", b.Hwnd, "ptr", 0, "int", nw - (tb.btns.Length - i + 1) * bw, "int", 0, "int", 0, "int", 0, "uint", 0x15)
+    tb.text.GetPos(&tx)
+    DllCall("SetWindowPos", "ptr", tb.text.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", Max(10, nw - tx - tb.btns.Length * bw - Round(8 * k)), "int", Round(TB_H * k), "uint", 0x16)
+}
+
+TitleBtnDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k, cx := Round(w / 2), cy := Round(h / 2)
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    close := b.kind = "close"
+    if hot
+        Gp_Rect(cv, 0, 0, w, h, close ? "C42B1C" : t.btnHot)
+    ic := hot && close ? "FFFFFF" : t.fg
+    switch b.kind {
+        case "min":
+            Gp_Line(cv, cx - 5, cy, cx + 5, cy, ic, 1)
+        case "max":
+            if DllCall("IsZoomed", "ptr", b.win) {             ; maximised: two windows = restore
+                GpBox(cv, cx - 5, cy - 3, 8, 8, ic)
+                Gp_Line(cv, cx - 3, cy - 5, cx + 5, cy - 5, ic, 1)
+                Gp_Line(cv, cx + 5, cy - 5, cx + 5, cy + 3, ic, 1)
+            } else
+                GpBox(cv, cx - 5, cy - 5, 10, 10, ic)
+        default:
+            Gp_Line(cv, cx - 5, cy - 5, cx + 5, cy + 5, ic, 1)
+            Gp_Line(cv, cx + 5, cy - 5, cx - 5, cy + 5, ic, 1)
+    }
+    SetBitmap(b, Gp_Done(cv))
+}
+
+GpBox(cv, x, y, w, h, hex) {
+    Gp_Line(cv, x, y, x + w, y, hex, 1), Gp_Line(cv, x + w, y, x + w, y + h, hex, 1)
+    Gp_Line(cv, x + w, y + h, x, y + h, hex, 1), Gp_Line(cv, x, y + h, x, y, hex, 1)
+}
+
+; The title bar buttons do what Windows' own do (WM_SYSCOMMAND), so the window's Close event runs.
+TitleBtnClick(b, *) {
+    h := b.win
+    switch b.kind {
+        case "min": PostMessage(0x112, 0xF020, 0, , "ahk_id " h)                                    ; SC_MINIMIZE
+        case "max": PostMessage(0x112, DllCall("IsZoomed", "ptr", h) ? 0xF120 : 0xF030, 0, , "ahk_id " h)   ; SC_RESTORE / SC_MAXIMIZE
+        default:    PostMessage(0x112, 0xF060, 0, , "ahk_id " h)                                    ; SC_CLOSE
+    }
+}
+
+; WM_NCCALCSIZE: the whole window is ours (no Windows frame or title bar). Maximised, Windows
+; puts the frame edges off screen, so the content is pulled in by that much.
+TitledNcCalc(wParam, lParam, msg, hwnd) {
+    if !wParam || !TITLED.Has(hwnd)
+        return
+    if DllCall("IsZoomed", "ptr", hwnd) {
+        pad := DllCall("GetSystemMetrics", "int", 92)          ; SM_CXPADDEDBORDER
+        fx := DllCall("GetSystemMetrics", "int", 32) + pad, fy := DllCall("GetSystemMetrics", "int", 33) + pad
+        NumPut("int", NumGet(lParam, 0, "int") + fx, "int", NumGet(lParam, 4, "int") + fy
+             , "int", NumGet(lParam, 8, "int") - fx, "int", NumGet(lParam, 12, "int") - fy, lParam)
+    }
+    return 0
+}
+
+; WM_NCHITTEST: our title bar acts as Windows' title bar; the edges resize (resizable windows).
+TitledHitTest(wParam, lParam, msg, hwnd) {
+    if !TITLED.Has(hwnd)
+        return
+    x := lParam & 0xFFFF, y := (lParam >> 16) & 0xFFFF
+    x := x > 32767 ? x - 65536 : x, y := y > 32767 ? y - 65536 : y
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", hwnd, "ptr", rc)
+    rx := x - NumGet(rc, 0, "int"), ry := y - NumGet(rc, 4, "int")
+    ww := NumGet(rc, 8, "int") - NumGet(rc, 0, "int"), wh := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+    k := A_ScreenDPI / 96
+    if TITLED[hwnd].resize && !DllCall("IsZoomed", "ptr", hwnd) {
+        e := Round(6 * k)
+        l := rx < e, r := rx >= ww - e, t := ry < e, bt := ry >= wh - e
+        if t && l
+            return 13                                            ; HTTOPLEFT
+        if t && r
+            return 14                                            ; HTTOPRIGHT
+        if bt && l
+            return 16                                            ; HTBOTTOMLEFT
+        if bt && r
+            return 17                                            ; HTBOTTOMRIGHT
+        if l
+            return 10                                            ; HTLEFT
+        if r
+            return 11                                            ; HTRIGHT
+        if t
+            return 12                                            ; HTTOP
+        if bt
+            return 15                                            ; HTBOTTOM
+    }
+    if ry < Round(TB_H * k)
+        return 2                                                 ; HTCAPTION
+}
+
+; A number box shaped like a pill: our drawn pill with a borderless one-line box in its middle.
+; Clicking the pill's ends puts the cursor in the box.
+PillBox(win, x, y, w, h, value) {
+    pill := BoxFrame(win, x, y, w, h, "pill")
+    e := win.AddEdit("x" (x + 10) " y" y " w" (w - 20) " r1 Number Center Limit9 -E0x200", value)
+    e.pill := pill
+    FitInFrame(win, e, pill, h / 2)
+    return e
+}
+
+; A rounded box drawn behind a borderless text box: a 1 px outline and the text-box colour.
+; r: corner radius, or "pill" for fully round ends. On glass it is mixed into the glass the
+; way Windows paints the text box itself, so both are the same colour.
+BoxFrame(win, x, y, w, h, r := 8) {
+    f := win.AddText("x" x " y" y " w" w " h" h " +0xD +0x100", "")
+    f.GetPos(, , &pw, &ph)
+    f.px := pw, f.py := ph, f.r := r
+    f.drawFn := BoxFrameDraw
+    BoxFrameDraw(f)
+    return f
+}
+
+BoxFrameDraw(f, hot := false) {
+    t := ThemeColors()
+    cv := Gp_Canvas(f.px, f.py, t.bg, true)
+    k := cv.k, w := f.px / k, h := f.py / k
+    bw := Round(k) / k                                          ; 1 pixel
+    r := f.r = "pill" ? h / 2 : f.r
+    Gp_Round(cv, 0, 0, w, h, r, t.HasOwnProp("edge") ? t.edge : t.line)
+    Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, r - bw, t.field)
+    SetBitmap(f, Gp_Done(cv, GlassOn()))
+}
+
+; Puts a text box inside its frame, padX (96-dpi units) in from the sides. padY < 0: one line of
+; text high, in the middle (measured from the real font); otherwise padY in from top and bottom.
+; Clicking the frame puts the cursor in the box.
+FitInFrame(win, e, f, padX, padY := -1) {
+    k := A_ScreenDPI / 96
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", f.Hwnd, "ptr", rc)
+    DllCall("MapWindowPoints", "ptr", 0, "ptr", win.Hwnd, "ptr", rc, "uint", 2)
+    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
+    px := Round(padX * k)
+    if padY < 0 {
+        dc := DllCall("GetDC", "ptr", e.Hwnd, "ptr")
+        old := DllCall("SelectObject", "ptr", dc, "ptr", SendMessage(0x31, 0, 0, e), "ptr")    ; WM_GETFONT
+        tm := Buffer(64, 0)
+        DllCall("GetTextMetrics", "ptr", dc, "ptr", tm)
+        lh := NumGet(tm, 0, "int")                               ; tmHeight
+        DllCall("SelectObject", "ptr", dc, "ptr", old)
+        DllCall("ReleaseDC", "ptr", e.Hwnd, "ptr", dc)
+        ey := t + (b - t - lh) // 2
+    } else
+        ey := t + Round(padY * k), lh := b - t - 2 * Round(padY * k)
+    DllCall("MoveWindow", "ptr", e.Hwnd, "int", l + px, "int", ey, "int", r - l - 2 * px, "int", lh, "int", 1)
+    f.OnEvent("Click", (*) => e.Focus())
+}
+
+; Closes a dialog that disabled its owner. The owner is enabled first, so Windows hands the focus
+; straight back to it (closing first made Windows briefly activate another window: a flash).
+EndModal(d, owner) {
+    try owner.Opt("-Disabled")
+    try d.Destroy()
+}
+
+; ---- Our own scroll bars ------------------------------------------------------------------
+; Windows' scroll bars can't be coloured or rounded, so every scrolling box gets ours: a thin
+; rounded thumb in a rounded track, in the theme's colours. The box keeps its own scroll bar
+; (wheel, keys and positions stay Windows'), cut off with a window region, and ours sits in
+; that strip. A timer keeps ours in step; dragging it or clicking its track scrolls the box.
+; target: a list or text box, or "guide" (the Shortcuts page).
+ScrollOverlay(win, target, onField := false) {
+    sb := win.AddText("x0 y0 w1 h1 +0xD +0x100", "")
+    if onField                                                  ; inside one of our box frames
+        PICFIELD[sb.Hwnd] := 1
+    sb.target := target, sb.kind := IsObject(target) ? target.Type : "guide"
+    sb.info := "", sb.hot := false, sb.px := 1, sb.py := 1
+    SCROLLS[sb.Hwnd] := sb
+    SetTimer(ScrollTick, 50)
+    return sb
+}
+
+ScrollTarget(sb) => sb.kind = "guide" ? GUIDE.hwnd : sb.target.Hwnd
+
+; Put the scroll bar over the right edge of its box, and cut the box's own one off.
+ScrollPlace(sb) {
+    h := ScrollTarget(sb)
+    if !h || !DllCall("IsWindow", "ptr", h)
+        return
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", h, "ptr", rc)
+    DllCall("MapWindowPoints", "ptr", 0, "ptr", DllCall("GetParent", "ptr", sb.Hwnd, "ptr"), "ptr", rc, "uint", 2)
+    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
+    w := DllCall("GetSystemMetrics", "int", 2)                  ; SM_CXVSCROLL: the width of Windows' bar
+    DllCall("SetWindowPos", "ptr", sb.Hwnd, "ptr", 0, "int", r - w, "int", t, "int", w, "int", b - t, "uint", 0x10)   ; on top
+    d := Round(14 * A_ScreenDPI / 96)                           ; round corners, like the buttons
+    DllCall("SetWindowRgn", "ptr", h, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", r - l - w + 1, "int", b - t + 1
+        , "int", d, "int", d, "ptr"), "int", 1)
+    sb.px := w, sb.py := b - t, sb.info := ""
+    ScrollDraw(sb)
+}
+
+; Where the box is scrolled: {ok, mn, mx, pg, pos}. ok = there is something to scroll.
+ScrollState(h) {
+    si := Buffer(28, 0)
+    NumPut("uint", 28, "uint", 0x17, si)                        ; SIF_ALL
+    got := h && DllCall("GetScrollInfo", "ptr", h, "int", 1, "ptr", si)
+    s := {mn: NumGet(si, 8, "int"), mx: NumGet(si, 12, "int"), pg: NumGet(si, 16, "uint"), pos: NumGet(si, 20, "int")}
+    s.ok := got && s.pg > 0 && s.mx - s.mn + 1 > s.pg
+    return s
+}
+
+; The thumb in pixels: top, height, track top and track length.
+ScrollGeom(sb, s) {
+    k := A_ScreenDPI / 96, pad := Round(2 * k)
+    len := sb.py - 2 * pad, rng := s.mx - s.mn + 1
+    th := Max(Round(24 * k), Round(len * s.pg / rng))
+    ty := pad + Round((len - th) * (s.pos - s.mn) / Max(1, rng - s.pg))
+    return {ty: ty, th: th, pad: pad, len: len}
+}
+
+ScrollDraw(sb) {
+    s := ScrollState(ScrollTarget(sb))
+    t := ThemeColors()
+    key := s.ok "|" s.mn "|" s.mx "|" s.pg "|" s.pos "|" sb.hot "|" sb.px "x" sb.py "|" t.bg t.field
+    if key = sb.info
+        return
+    sb.info := key
+    k := A_ScreenDPI / 96
+    cv := Gp_Canvas(sb.px, sb.py, t.bg, true)
+    if s.ok {
+        gm := ScrollGeom(sb, s)
+        bw := 6, x := (sb.px / k - bw) / 2
+        Gp_Round(cv, x, gm.pad / k, bw, gm.len / k, bw / 2, t.dark ? t.field : "E6E6E6")             ; track
+        thumb := t.dark ? (sb.hot ? "9A9DAA" : "6A6D7A") : (sb.hot ? "6E6E6E" : "A6A6A6")
+        Gp_Round(cv, x, gm.ty / k, bw, gm.th / k, bw / 2, thumb)                                       ; thumb
+    }
+    SetBitmap(sb, Gp_Done(cv))
+}
+
+; Keeps every visible scroll bar in step with its box (and lighter under the mouse).
+ScrollTick() {
+    if !SCROLLS.Count {
+        SetTimer(ScrollTick, 0)
+        return
+    }
+    MouseGetPos(, , , &over, 2)
+    for hw, sb in SCROLLS.Clone() {
+        if !DllCall("IsWindow", "ptr", hw) {
+            SCROLLS.Delete(hw)
+            continue
+        }
+        if !DllCall("IsWindowVisible", "ptr", hw)
+            continue
+        sb.hot := over = hw
+        ScrollDraw(sb)
+    }
+}
+
+; Mouse down on one of our scroll bars: drag the thumb (or, on the track, jump there and drag).
+ScrollDown(wParam, lParam, msg, hwnd) {
+    if !SCROLLS.Has(hwnd)
+        return
+    sb := SCROLLS[hwnd], h := ScrollTarget(sb)
+    s := ScrollState(h)
+    if !s.ok
+        return 0
+    gm := ScrollGeom(sb, s)
+    my := (lParam >> 16) & 0xFFFF
+    grab := my >= gm.ty && my < gm.ty + gm.th ? my - gm.ty : gm.th // 2
+    pt := Buffer(8)
+    while GetKeyState("LButton", "P") {
+        DllCall("GetCursorPos", "ptr", pt)
+        DllCall("ScreenToClient", "ptr", hwnd, "ptr", pt)
+        frac := Min(1, Max(0, (NumGet(pt, 4, "int") - grab - gm.pad) / Max(1, gm.len - gm.th)))
+        ScrollTo(sb, h, s.mn + Round(frac * (s.mx - s.mn + 1 - s.pg)))
+        sb.hot := true
+        ScrollDraw(sb)
+        Sleep 10
+    }
+    return 0
+}
+
+; The wheel over one of our scroll bars scrolls its box (Windows sends it to the bar itself).
+ScrollWheel(wParam, lParam, msg, hwnd) {
+    if !SCROLLS.Count
+        return
+    x := lParam & 0xFFFF, y := (lParam >> 16) & 0xFFFF
+    x := x >= 0x8000 ? x - 0x10000 : x, y := y >= 0x8000 ? y - 0x10000 : y
+    over := DllCall("WindowFromPoint", "int64", (y << 32) | (x & 0xFFFFFFFF), "ptr")
+    if !SCROLLS.Has(over)
+        return
+    sb := SCROLLS[over]
+    if sb.kind = "guide" {
+        delta := (wParam >> 16) & 0xFFFF
+        delta := delta >= 0x8000 ? delta - 0x10000 : delta
+        GuideScroll(-delta / 120 * Round(20 * A_ScreenDPI / 96) * 3)
+    } else
+        PostMessage(0x20A, wParam, lParam, , "ahk_id " ScrollTarget(sb))
+    sb.info := ""                                               ; redraw at the new place
+    return 0
+}
+
+ScrollTo(sb, h, newPos) {
+    cur := ScrollState(h).pos
+    if newPos = cur
+        return
+    switch sb.kind {
+        case "guide":
+            GuideScroll(newPos - GUIDE.pos)
+        case "ListView":                                        ; scrolled in pixels: rows x row height
+            rc := Buffer(16, 0)
+            SendMessage(0x100E, 0, rc.Ptr, h)                   ; LVM_GETITEMRECT (row 0, LVIR_BOUNDS)
+            ih := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+            if ih > 0
+                SendMessage(0x1014, 0, (newPos - cur) * ih, h)  ; LVM_SCROLL
+        default:                                                ; a text box: lines
+            SendMessage(0xB6, 0, newPos - cur, h)               ; EM_LINESCROLL
+    }
+}
+
+; ---- Release notes: a pop-up over the settings window, no title bar, Close or Esc ----------
+ShowNotes(owner) {
+    md := ChangelogText()
+    text := md = "" ? "The release notes aren't included in this copy of the app.`nThey are on GitHub (GitHub repo button)."
+                    : StrReplace(NotesText(RegExReplace(md, "^\s*#\s+Changelog\s*")), Chr(96))   ; no `code` marks
+    k := A_ScreenDPI / 96
+    d := Gui("-Caption +Owner" owner.Hwnd (VerCompare(A_OSVersion, "10.0.22000") < 0 ? " +Border" : ""))
+    hw := d.Hwnd
+    POPUPS[hw] := 1
+    d.SetFont("s12 bold", "Segoe UI")
+    d.AddText("x24 y20 w512", "What's new")
+    d.SetFont("s9 norm", "Segoe UI")
+    ed := d.AddEdit("x24 y56 w512 h336 ReadOnly Multi VScroll -E0x200", text)
+    edSb := ScrollOverlay(d, ed)
+    SendMessage(0xD3, 3, Round(10 * k) | (Round(10 * k) << 16), ed)   ; EM_SETMARGINS: room at the left and right
+    AddBtn(d, "x436 y410 w100 h30", "Close").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
+    ApplyTheme(d)
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hw, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
+    rc := Buffer(16)                                            ; centred on the settings window
+    DllCall("GetWindowRect", "ptr", owner.Hwnd, "ptr", rc)
+    x := (NumGet(rc, 0, "int") + NumGet(rc, 8, "int") - Round(560 * k)) // 2
+    y := (NumGet(rc, 4, "int") + NumGet(rc, 12, "int") - Round(462 * k)) // 2
+    owner.Opt("+Disabled")                                      ; stays put over the app until closed
+    d.Show("x" x " y" y " w560 h462")
+    ScrollPlace(edSb)                                           ; our scroll bar; rounds the box too
+    SendMessage(0xB1, 0, 0, ed)                                 ; EM_SETSEL: nothing selected
+    WinWaitClose("ahk_id " hw)
+    owner.Opt("-Disabled")
+    try POPUPS.Delete(hw)
+}
+
+; CHANGELOG.md: embedded in the exe (resource CHANGELOG), next to the script otherwise.
+ChangelogText() {
+    if !A_IsCompiled
+        return FileExist(A_ScriptDir "\CHANGELOG.md") ? FileRead(A_ScriptDir "\CHANGELOG.md", "UTF-8") : ""
+    try {
+        hr := DllCall("FindResource", "ptr", 0, "str", "CHANGELOG", "ptr", 10, "ptr")   ; RT_RCDATA
+        if !hr
+            return ""
+        sz := DllCall("SizeofResource", "ptr", 0, "ptr", hr, "uint")
+        p := DllCall("LockResource", "ptr", DllCall("LoadResource", "ptr", 0, "ptr", hr, "ptr"), "ptr")
+        return p ? StrGet(p, sz, "UTF-8") : ""
+    }
+    return ""
+}
+
+; A drop-down drawn like our buttons: the chosen item and a ˅; a click opens a menu of the items.
+; .sel = the chosen item's number.
+DropBtn(win, opts, items, sel) {
+    b := AddBtn(win, opts, items[sel])
+    b.items := items, b.sel := sel
+    BtnRender(b, false)                                        ; again, now with the ˅
+    b.OnEvent("Click", DropBtnMenu)
+    return b
+}
+
+DropBtnMenu(b, *) {
+    items := []
+    for i, name in b.items
+        items.Push({text: name, fn: DropBtnPick.Bind(b, i), check: i = b.sel})
+    rc := Buffer(16)                                           ; opens beside the drop-down (right side), top aligned
+    DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
+    PopMenu(b, items, NumGet(rc, 8, "int") + Round(8 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
+}
+
+; A menu in the app's own style (Windows' menus can't be rounded or coloured to match): a small
+; frameless window with the items drawn like our buttons, on glass when the glass is on.
+; Closes on a pick, Esc, or a click anywhere else. items: {text, fn, check} or "-" for a line.
+PopMenu(ctrl, items, x, y) {
+    k := A_ScreenDPI / 96
+    owner := DllCall("GetAncestor", "ptr", ctrl.Hwnd, "uint", 2, "ptr")       ; GA_ROOT
+    m := Gui("-Caption +ToolWindow +AlwaysOnTop +Owner" owner (VerCompare(A_OSVersion, "10.0.22000") < 0 ? " +Border" : ""))
+    m.MarginX := 0, m.MarginY := 0
+    mh := m.Hwnd                                                ; kept: m.Hwnd can't be read once it's closed
+    POPUPS[mh] := 1
+    W := 176, iy := 6
+    for it in items {
+        if !IsObject(it) {                                      ; "-": a thin line
+            sp := m.AddText("x12 y" (iy + 3) " w" (W - 24) " h1"), sp.role := "line"
+            iy += 8
+            continue
+        }
+        b := m.AddText("x6 y" iy " w" (W - 12) " h26 +0xD +0x100", "")
+        b.GetPos(, , &pw, &ph)
+        b.px := pw, b.py := ph, b.dis := false, b.itemText := it.text, b.check := it.HasOwnProp("check") && it.check
+        b.drawFn := MenuItemDraw
+        BTN[b.Hwnd] := b                                        ; lighter under the mouse
+        b.OnEvent("Click", Pick.Bind(it.fn))
+        MenuItemDraw(b)
+        iy += 27
+    }
+    H := iy + 5
+    m.OnEvent("Escape", (*) => Close())
+    ApplyTheme(m)
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", m.Hwnd, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
+    MonitorGetWorkArea(MonitorFromPt(x, y), &ml, &mt, &mr, &mb)  ; stay on the screen
+    x := Max(ml, Min(x, mr - Round(W * k))), y := Max(mt, Min(y, mb - Round(H * k)))
+    m.Show("x" x " y" y " w" W " h" H)
+    SetTimer(BtnHoverTick, 40)
+    SetTimer(Watch, 60)
+
+    Watch() {                                                   ; another window took over: close
+        if !DllCall("IsWindow", "ptr", mh) {
+            SetTimer(Watch, 0)
+            return
+        }
+        if DllCall("GetForegroundWindow", "ptr") != mh
+            Close()
+    }
+    Pick(fn, *) {
+        Close()
+        fn.Call()
+    }
+    Close() {                                                   ; forget its items, then close
+        SetTimer(Watch, 0)
+        if !DllCall("IsWindow", "ptr", mh)
+            return
+        for hw, c in m
+            try BTN.Delete(hw)
+        try POPUPS.Delete(mh)
+        try m.Destroy()
+    }
+}
+
+; The monitor number at a screen point (for MonitorGetWorkArea).
+MonitorFromPt(x, y) {
+    Loop MonitorGetCount() {
+        MonitorGet(A_Index, &l, &t, &r, &b)
+        if x >= l && x < r && y >= t && y < b
+            return A_Index
+    }
+    return MonitorGetPrimary()
+}
+
+MenuItemDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if hot
+        Gp_Round(cv, 0, 0, w, h, 6, t.btnHot)
+    if b.check {                                               ; ✓ for the chosen item
+        Gp_Line(cv, 10, h / 2, 14, h / 2 + 4, t.accent, 1.6)
+        Gp_Line(cv, 14, h / 2 + 4, 21, h / 2 - 4, t.accent, 1.6)
+    }
+    Gp_Text(cv, b.itemText, 30, 0, w - 36, h, t.fg, 12, false, 0, hot ? 5 : 3)
+    SetBitmap(b, Gp_Done(cv))
+}
+
+DropBtnPick(b, i, *) {
+    b.sel := i
+    b.Text := b.items[i]
 }
 
 BtnDisable(b) {
@@ -2214,7 +3051,7 @@ BtnHoverTick() {
 ; The mouse with its side buttons, drawn for the Mouse & keys page. The whole picture
 ; (labels + mouse) is centred in its 300-wide box.
 MouseArt(win, x, y) {
-    pic := win.AddText("x" x " y" y " w300 h215 +0xE", "")
+    pic := win.AddText("x" x " y" y " w300 h200 +0xD", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph
     pic.drawFn := MouseArtDraw
@@ -2225,25 +3062,28 @@ MouseArt(win, x, y) {
 MouseArtDraw(pic, hot := false) {
     t := ThemeColors()
     cv := Gp_Canvas(pic.px, pic.py, t.bg, true)
+    ac := t.accent, fg := t.fg, mu := t.muted
+    if pic.HasOwnProp("dis") && pic.dis                        ; section switched off: greyed
+        ac := t.dark ? "4A4D58" : "C2C2C2", fg := mu := t.dark ? "5C5F6B" : "B4B4B4"
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
     Gp_Line(cv, mx + 46, 8, mx + 46, 74, t.bg, 2)              ; gap between the two main buttons
     Gp_Line(cv, mx + 2, 74, mx + 90, 74, t.bg, 2)
-    Gp_Round(cv, mx + 39, 24, 14, 28, 7, t.accent)             ; wheel
-    Gp_Round(cv, mx - 7, 84, 10, 26, 4, t.accent)              ; forward button
-    Gp_Round(cv, mx - 7, 116, 10, 26, 4, t.accent)             ; back button
-    Gp_Line(cv, mx - 20, 97, mx - 9, 97, t.accent, 1.5)
-    Gp_Line(cv, mx - 20, 129, mx - 9, 129, t.accent, 1.5)
-    Gp_Text(cv, "Forward  ›  Redo", mx - 142, 85, 120, 24, t.fg, 12, true, 2)
-    Gp_Text(cv, "Back  ›  Undo", mx - 142, 117, 120, 24, t.fg, 12, true, 2)
-    Gp_Text(cv, "Both together  ›  Enter", 0, 174, 300, 22, t.muted, 12, false, 1)
+    Gp_Round(cv, mx + 39, 24, 14, 28, 7, ac)             ; wheel
+    Gp_Round(cv, mx - 7, 84, 10, 26, 4, ac)              ; forward button
+    Gp_Round(cv, mx - 7, 116, 10, 26, 4, ac)             ; back button
+    Gp_Line(cv, mx - 20, 97, mx - 9, 97, ac, 1.5)
+    Gp_Line(cv, mx - 20, 129, mx - 9, 129, ac, 1.5)
+    Gp_Text(cv, "Forward  ›  Redo", mx - 142, 85, 120, 24, fg, 12, true, 2)
+    Gp_Text(cv, "Back  ›  Undo", mx - 142, 117, 120, 24, fg, 12, true, 2)
+    Gp_Text(cv, "Both together  ›  Enter", 0, 174, 300, 22, mu, 12, false, 1)
     SetBitmap(pic, Gp_Done(cv))
 }
 
 ; ---- Theme cards (Settings > General): a rounded square with an icon, the name under it ----
 ThemeCard(win, x, y, key, label, onPick) {
-    pic := win.AddText("x" x " y" y " w96 h80 +0xE +0x100", "")
+    pic := win.AddText("x" x " y" y " w96 h80 +0xD +0x100", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph, pic.key := key, pic.dis := false
     pic.drawFn := ThemeCardDraw
@@ -2267,6 +3107,10 @@ ThemeCardDraw(b, hot := false) {
         bw := Round(2 * cv.k) / cv.k                          ; frame = whole pixels, same on every side
         Gp_Round(cv, 0, 0, w, h, 12, t.accent)
         Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
+    } else if t.HasOwnProp("glass") {                          ; glass: thin outline
+        bw := Round(cv.k) / cv.k
+        Gp_Round(cv, 0, 0, w, h, 12, t.edge)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
     } else
         Gp_Round(cv, 0, 0, w, h, 12, fill)
     switch b.key {
@@ -2287,6 +3131,49 @@ ThemeCardDraw(b, hot := false) {
             Gp_Line(cv, cx - 10, cy + 20, cx + 10, cy + 20, ic, 2.5)
     }
     SetBitmap(b, Gp_Done(cv))
+}
+
+; ---- A toggle switch (a pill with a knob) and its label; the label clicks it too ----
+; getOn() / canUse() are asked every time it is drawn; when canUse() is false it is grey,
+; shows labelOff and ignores clicks (Frosted glass on the light theme).
+ToggleSwitch(win, x, y, getOn, canUse, label, labelOff, onFlip) {
+    pic := win.AddText("x" x " y" y " w40 h20 +0xD +0x100", "")
+    pic.GetPos(, , &pw, &ph)
+    pic.px := pw, pic.py := ph, pic.dis := false
+    pic.getOn := getOn, pic.canUse := canUse, pic.label := label, pic.labelOff := labelOff
+    pic.lbl := win.AddText("x" (x + 50) " y" (y + 2) " w340 +0x100", label)
+    pic.drawFn := ToggleSwitchDraw
+    BTN[pic.Hwnd] := pic                                       ; lighter under the mouse, like buttons
+    SetTimer(BtnHoverTick, 40)
+    flip := (*) => canUse() ? (onFlip(!getOn()), ToggleSwitchDraw(pic)) : 0
+    pic.OnEvent("Click", flip)
+    pic.lbl.OnEvent("Click", flip)
+    ToggleSwitchDraw(pic)
+    return pic
+}
+
+ToggleSwitchDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k
+    use := b.canUse.Call()
+    on := use && b.getOn.Call()
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if on {                                                    ; on: accent pill, knob on the right
+        Gp_Round(cv, 0, 0, w, h, h / 2, hot ? t.priHot : t.pri)
+        Gp_Round(cv, w - h + 4, 4, h - 8, h - 8, (h - 8) / 2, t.priText)
+    } else {                                                   ; off: outlined pill, knob on the left
+        edge := use ? (hot ? t.fg : t.muted) : t.line
+        Gp_Round(cv, 0, 0, w, h, h / 2, edge)
+        Gp_Round(cv, 1.5, 1.5, w - 3, h - 3, h / 2 - 1.5, t.field)
+        Gp_Round(cv, 5, 5, h - 10, h - 10, (h - 10) / 2, edge)
+    }
+    SetBitmap(b, Gp_Done(cv))
+    try {
+        b.lbl.Text := use ? b.label : b.labelOff
+        b.lbl.role := use ? "" : "muted"                       ; ApplyTheme keeps this colour
+        b.lbl.SetFont("c" (use ? t.fg : t.muted))
+    }
 }
 
 ; The settings window's own icons: the small one (title bar) follows the app theme, the big one
@@ -2327,6 +3214,7 @@ NewList(win, opts, cols, anchorFlags) {
         sp.role := "line"
         lv.seps.Push(sp)
     }
+    lv.sb := ScrollOverlay(win, lv)                            ; our scroll bar (FitList places it)
     return Anchor(lv, anchorFlags)
 }
 
@@ -2341,6 +3229,59 @@ LvHeader(win, x, y, w, cols) {
     }
     l := Anchor(win.AddText("x" x " y" (y + 21) " w" w " h1"), "w")
     l.role := "line"
+}
+
+; The controls a window has now; PanelSince(win, mark) = the ones added after it (one section).
+PanelMark(win) {
+    m := Map()
+    for hw, c in win                                           ; (two variables: one alone gets the control, not its hwnd)
+        m[hw] := 1
+    return m
+}
+
+PanelSince(win, mark) {
+    a := []
+    for hw, c in win
+        if !mark.Has(hw)
+            a.Push(c)
+    return a
+}
+
+; A section switched off (on = false): its text greyed, its buttons, key boxes, sliders and
+; number boxes greyed and not responding, its list greyed (double-click does nothing).
+; Switched on: back to normal.
+PanelState(ctrls, on) {
+    t := ThemeColors()
+    dim := t.dark ? "5C5F6B" : "B4B4B4"
+    for c in ctrls {
+        hw := c.Hwnd
+        if SCROLLS.Has(hw)
+            continue
+        if BTN.Has(hw) {                                       ; our buttons, drop-downs, key boxes, ×
+            c.Enabled := on, c.dis := !on
+            BtnRender(c, false)
+            continue
+        }
+        role := c.HasOwnProp("role") ? c.role : ""
+        switch c.Type {
+            case "Text":
+                if c.HasOwnProp("drawFn") {                    ; drawn pictures (the mouse)
+                    c.dis := !on
+                    c.drawFn.Call(c, false)
+                } else if role != "line"
+                    c.SetFont("c" (on ? (role = "muted" || role = "head" ? t.muted : t.fg) : dim))
+            case "Edit":                                       ; number boxes: can't be typed in
+                SendMessage(0xCF, on ? 0 : 1, 0, c)            ; EM_SETREADONLY
+                c.SetFont("c" (on ? t.fg : dim))
+            case "Slider":
+                c.Enabled := on
+                RefreshSlider(hw)
+            case "ListView":
+                c.off := !on
+                c.SetFont("c" (on ? t.fg : dim))
+                DllCall("RedrawWindow", "ptr", hw, "ptr", 0, "ptr", 0, "uint", 0x0185)
+        }
+    }
 }
 
 ; Grey hint text.
@@ -2571,15 +3512,18 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
         b.OnEvent("Click", Pick.Bind(label))
     }
     ; details = {label, text}: that button opens the text in a box under the buttons (the window grows).
-    det := 0
+    det := 0, detSb := 0
     if opts && opts.HasOwnProp("details") && opts.details.text != "" {
         det := d.AddEdit("x24 y" (y + 44) " w" W " h240 ReadOnly Multi VScroll -E0x200 Hidden", opts.details.text)
+        detSb := ScrollOverlay(d, det)
+        detSb.Visible := false
     }
     d.OnEvent("Close", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
+    TitleBar(d, title = "" ? APP_NAME : title)
     ApplyTheme(d)
     SetWindowIcons(d)
-    d.Show("AutoSize")
+    ShowTitled(d)
     ; Rounded corners on Windows 11. Windows 10 keeps its square frame: clipping a window that has
     ; a title bar to a rounded shape showed its invisible resize border as a thick white rim.
     try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", d.Hwnd, "int", 33, "int*", 2, "int", 4)
@@ -2592,7 +3536,10 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
     Pick(label, *) {
         if det && label = opts.details.label {            ; show / hide the details box
             det.Visible := !det.Visible
-            d.Show("AutoSize")
+            detSb.Visible := det.Visible
+            SizeTitled(d)
+            if det.Visible
+                ScrollPlace(detSb)
             return
         }
         if opts && opts.HasOwnProp("keepOpen") && opts.keepOpen.Has(label)
@@ -2986,18 +3933,19 @@ SetKeyBox(b, value) {
 }
 
 KeyBoxMenu(b, *) {
-    m := Menu()
-    m.Add("Record keys...", (*) => RecordKeys(b))
-    m.Add()
+    cur := KeyBoxValue(b)
+    items := [{text: "Record keys...", fn: (*) => RecordKeys(b)}, "-"]
     for group in [["{Volume_Up}", "{Volume_Down}", "{Volume_Mute}"]
                 , ["{Media_Play_Pause}", "{Media_Next}", "{Media_Prev}", "{Media_Stop}"]
                 , ["{Enter}", "{Escape}", "{Delete}", "^{z}", "^{y}", "^+{z}"]] {
         for keys in group
-            m.Add(PrettyKeys(keys), KeyBoxSetter(b, keys))
-        m.Add()
+            items.Push({text: PrettyKeys(keys), fn: KeyBoxSetter(b, keys), check: keys = cur})
+        items.Push("-")
     }
-    m.Add("(none)", KeyBoxSetter(b, ""))
-    m.Show()
+    items.Push({text: "(none)", fn: KeyBoxSetter(b, ""), check: cur = ""})
+    rc := Buffer(16)                                           ; beside the box and its × (right side)
+    DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
+    PopMenu(b, items, NumGet(rc, 8, "int") + Round(36 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
 }
 
 KeyBoxSetter(b, keys) => (*) => SetKeyBox(b, keys)
@@ -3127,8 +4075,10 @@ SideAppDialog(owner, e := 0) {
     d := Gui("+Owner" owner.Hwnd " +ToolWindow", "Side buttons for an app")
     d.SetFont("s9", "Segoe UI")
     d.AddText("x10 y14 w110", "App:")
-    eApp := d.AddEdit("x120 y10 w160", e ? e.app : "")
-    AddBtn(d, "x+6 yp w150", "Pick app...").OnEvent("Click", (*) => ChooseApp(d, (exe) => eApp.Value := exe))
+    fApp := BoxFrame(d, 120, 10, 160, 28)                       ; rounded, in the theme colours
+    eApp := d.AddEdit("x130 y14 w140 r1 -E0x200", e ? e.app : "")
+    FitInFrame(d, eApp, fApp, 10)
+    AddBtn(d, "x286 y10 w150", "Pick app...").OnEvent("Click", (*) => ChooseApp(d, (exe) => eApp.Value := exe))
     boxes := Map()
     for i, row in [["back", "Back"], ["fwd", "Forward"], ["both", "Both"]] {
         y := 46 + (i - 1) * 32
@@ -3137,12 +4087,14 @@ SideAppDialog(owner, e := 0) {
     }
     Muted(d.AddText("x10 y146 w430", "Click a box, press the keys. × clears."))
     AddBtn(d, "x10 y172 w80", "OK").OnEvent("Click", OkClick)
-    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
-    d.OnEvent("Escape", (*) => d.Destroy())
+    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
+    d.OnEvent("Close", (*) => EndModal(d, owner))
     hw := d.Hwnd
+    TitleBar(d, "Side buttons for an app")
     ApplyTheme(d)
     owner.Opt("+Disabled")
-    d.Show()
+    ShowTitled(d)
     WinWaitClose(hw)
     owner.Opt("-Disabled")
     WinActivate(owner.Hwnd)
@@ -3159,7 +4111,7 @@ SideAppDialog(owner, e := 0) {
             return
         }
         res.val := {app: a, back: KeyBoxValue(boxes["back"]), fwd: KeyBoxValue(boxes["fwd"]), both: KeyBoxValue(boxes["both"])}
-        d.Destroy()
+        EndModal(d, owner)
     }
 }
 
@@ -3168,17 +4120,26 @@ SnippetDialog(owner, trig := "", txt := "") {
     res := {val: ""}
     d := Gui("+Owner" owner.Hwnd " +ToolWindow", "Text shortcut")
     d.SetFont("s9", "Segoe UI")
-    d.AddText(, "You type:")
-    eT := d.AddEdit("w340", trig)
-    d.AddText(, "You get:")
-    eX := d.AddEdit("w340 r5 WantReturn", txt)
-    AddBtn(d, "w80", "OK").OnEvent("Click", OkClick)
-    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
-    d.OnEvent("Escape", (*) => d.Destroy())
+    ; Rounded boxes in the theme colours (no Windows frame), with our scroll bar on the big one.
+    d.AddText("x12 y10 w340", "You type:")
+    fT := BoxFrame(d, 12, 30, 340, 30)
+    eT := d.AddEdit("x22 y34 w320 r1 -E0x200", trig)
+    d.AddText("x12 y72 w340", "You get:")
+    fX := BoxFrame(d, 12, 92, 340, 112)
+    eX := d.AddEdit("x20 y98 w324 h100 Multi WantReturn VScroll -E0x200", txt)
+    eXSb := ScrollOverlay(d, eX, true)
+    AddBtn(d, "x12 y218 w80", "OK").OnEvent("Click", OkClick)
+    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
+    d.OnEvent("Close", (*) => EndModal(d, owner))
     hw := d.Hwnd
+    FitInFrame(d, eT, fT, 10)
+    FitInFrame(d, eX, fX, 8, 6)
+    TitleBar(d, "Text shortcut")
     ApplyTheme(d)
     owner.Opt("+Disabled")
-    d.Show()
+    ShowTitled(d)
+    ScrollPlace(eXSb)
     WinWaitClose(hw)
     owner.Opt("-Disabled")
     WinActivate(owner.Hwnd)
@@ -3191,6 +4152,6 @@ SnippetDialog(owner, trig := "", txt := "") {
             return
         }
         res.val := {trigger: t, text: StrReplace(eX.Value, "`r`n", "`n")}
-        d.Destroy()
+        EndModal(d, owner)
     }
 }

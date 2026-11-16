@@ -2,6 +2,9 @@
 
 ## 2.1.7 (not released yet)
 
+**New**
+- Frosted glass for the dark look, on by default: a tinted, blurred see-through background with soft panels and outlined buttons. Turn it off with the switch under the theme cards (Settings > General > Look).
+
 **Improvements**
 - Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.
 - Adding Ctrl while Shift is still held from a fast scroll now scrolls sideways (it zoomed before), and stops the glide.

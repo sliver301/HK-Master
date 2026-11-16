@@ -1107,9 +1107,8 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
-    ; Frosted glass switch: hidden while the glass is paused (GlassOn).
-    ; glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, GlassSupported
-    ;     , "Frosted glass", "Frosted glass (needs Windows 10 1803 or newer)", PickGlass)
+    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => IsDarkTheme() && GlassSupported()
+        , "Frosted glass", "Frosted glass (dark look only)", PickGlass)
 
     SecHeader(g, "x20 y232 w400", "Startup")
     startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
@@ -1860,7 +1859,7 @@ SliderTrackDraw(ctrl, hdc, l, t, r, b) {
     gr := 0
     DllCall("gdiplus\GdipCreateFromHDC", "ptr", hdc, "ptr*", &gr)
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)
-    GpPill(gr, l, y, r - l, h, th.dark ? "6E6E6E" : "8A8A8A")
+    GpPill(gr, l, y, r - l, h, th.HasOwnProp("glass") ? th.track : th.dark ? "6E6E6E" : "8A8A8A")
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", gr)
     return 4                                       ; CDRF_SKIPDEFAULT
 }
@@ -2028,58 +2027,47 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
-    t := IsDarkTheme()
+    ; Frosted glass (dark look only), the same recipe as Islam's "Claude Dual Logins" app.
+    ; Windows ADDS every colour we paint to the tinted blur behind the window: pure black (bg)
+    ; is clear glass, very dark colours are soft tints, and text has to be light. So these are
+    ; much darker than the solid Dark colours on purpose. edge = outline of drawn buttons.
+    if GlassOn()
+        return {dark: true, glass: true, bg: "000000", fg: "F3F4F8", muted: "A3A6B2", field: "101116", line: "2C2E38"
+            , btn: "1E1F27", btnHot: "30323D", edge: "424450", track: "3A3C48", accent: "4CC2FF"
+            , pri: "2254C4", priHot: "3865CB", priEdge: "4972CE", priText: "F3F4F8"
+            , danger: "C83C34", dangerHot: "CD4F48", dangerEdge: "D15F58", dis: "24252D"}
+    return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
-    ; Frosted glass: the background becomes a "see-through colour" (SetGlass). It is an odd
-    ; shade close to the normal background, used for nothing else, so only the background
-    ; turns to glass and the soft edges of text and buttons blend into about the right colour.
-    if GlassOn()
-        t.glass := true, t.bg := t.dark ? "1E1E1F" : "F3F3F5"
-    return t
 }
 
-; Frosted glass (Settings > General > Look, on by default), light and dark. Needs Windows 10 1803+.
-GlassOn() => false   ; paused: both see-through methods failed his test (washed text / click-through); see SetGlass
+; Frosted glass (Settings > General > Look, on by default) for the dark look. Light can't
+; have it: on glass every colour is added to the blur, so dark text on light glass vanishes.
+; Needs Windows 10 1803 or newer.
+GlassOn() => cfg.glass && IsDarkTheme() && GlassSupported()
 GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
 
 ; Turns the frosted backdrop on or off for a top-level window (child windows, like the
-; Shortcuts page, are part of their parent's picture and follow it).
-; How: the window becomes "layered" with a see-through colour (the theme's bg), so every
-; background pixel is a hole and everything else (text, boxes, buttons) stays fully solid.
-; Behind the holes Windows draws a blur: Windows 11 22H2+ its own acrylic (light or dark,
-; following the title-bar setting), older Windows the Windows 10 blur with our own tint.
-; Note: clicks on a hole go to the window behind, as Windows does for every see-through pixel.
+; Shortcuts page, are part of their parent's picture and follow it). An unnamed Windows
+; function (SetWindowCompositionAttribute, WCA_ACCENT_POLICY = 19) puts a blur behind the
+; window with our tint over it (flag 2). Windows 11: acrylic (4), tint 0xD8140F0C (AABBGGRR,
+; a blue-black at 85%), exactly as in the Claude Dual Logins app. Windows 10: the plain blur
+; (3) with the same tint, because acrylic lags there when the window is dragged.
 SetGlass(win, on) {
     h := win.Hwnd
     if !on && !GLASS_WINS.Has(h)                       ; never had it: leave Windows' default alone
         return
     if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
         return
-    t := ThemeColors()
-    if on {
-        c := Integer("0x" t.bg)
-        key := ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16)      ; RRGGBB -> Windows' BBGGRR
-        WinSetExStyle("+0x80000", h)                               ; WS_EX_LAYERED
-        DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", key, "uchar", 0, "uint", 1)  ; LWA_COLORKEY
-    } else
-        WinSetExStyle("-0x80000", h)
-    if VerCompare(A_OSVersion, "10.0.22621") >= 0 {
-        ; DWMWA_SYSTEMBACKDROP_TYPE: 3 = acrylic (frosted), 0 = Windows decides (the default)
-        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", h, "int", 38, "int*", on ? 3 : 0, "int", 4)
-    } else {
-        ; An unnamed Windows function (SetWindowCompositionAttribute, WCA_ACCENT_POLICY = 19):
-        ; ACCENT_ENABLE_BLURBEHIND (3), flag 2 = our tint over the blur (AABBGGRR, about 70%).
-        ap := Buffer(16, 0)
-        NumPut("int", on ? 3 : 0, ap, 0)
-        NumPut("int", on ? 2 : 0, ap, 4)
-        NumPut("uint", on ? (t.dark ? 0xB4202020 : 0xB4F3F3F3) : 0, ap, 8)
-        wd := Buffer(A_PtrSize * 3, 0)
-        NumPut("int", 19, wd, 0)
-        NumPut("ptr", ap.Ptr, wd, A_PtrSize)
-        NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
-        try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
-    }
+    ap := Buffer(16, 0)
+    NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
+    NumPut("int", on ? 2 : 0, ap, 4)
+    NumPut("uint", on ? 0xD8140F0C : 0, ap, 8)
+    wd := Buffer(A_PtrSize * 3, 0)
+    NumPut("int", 19, wd, 0)
+    NumPut("ptr", ap.Ptr, wd, A_PtrSize)
+    NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+    try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
     if on
         GLASS_WINS[h] := 1
     else
@@ -2186,7 +2174,35 @@ Gp_Done(cv) {
     DllCall("gdiplus\GdipCreateHBITMAPFromBitmap", "ptr", cv.bmp, "ptr*", &hbm, "uint", 0xFF000000)
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
     DllCall("gdiplus\GdipDisposeImage", "ptr", cv.bmp)
-    return hbm
+    return GlassOn() ? NoAlpha(hbm) : hbm
+}
+
+; On glass a 32-bit picture is pasted solid, so its black background showed as black boxes.
+; Windows adds a pixel to the glass only when its alpha byte is 0, which is what plain GDI
+; writes, so the picture is copied into a 24-bit one (no alpha) and the old one is freed.
+NoAlpha(hbm) {
+    bm := Buffer(A_PtrSize = 8 ? 32 : 24, 0)                ; BITMAP
+    DllCall("GetObject", "ptr", hbm, "int", bm.Size, "ptr", bm)
+    w := NumGet(bm, 4, "int"), h := NumGet(bm, 8, "int")
+    bi := Buffer(40, 0)                                      ; BITMAPINFOHEADER, 24 bits, top-down
+    NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
+    NumPut("ushort", 1, bi, 12), NumPut("ushort", 24, bi, 14)
+    sdc := DllCall("GetDC", "ptr", 0, "ptr")
+    src := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
+    dst := DllCall("CreateCompatibleDC", "ptr", sdc, "ptr")
+    bits := 0
+    out := DllCall("CreateDIBSection", "ptr", sdc, "ptr", bi, "uint", 0, "ptr*", &bits, "ptr", 0, "uint", 0, "ptr")
+    if !out {
+        DllCall("DeleteDC", "ptr", src), DllCall("DeleteDC", "ptr", dst), DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
+        return hbm
+    }
+    o1 := DllCall("SelectObject", "ptr", src, "ptr", hbm, "ptr")
+    o2 := DllCall("SelectObject", "ptr", dst, "ptr", out, "ptr")
+    DllCall("BitBlt", "ptr", dst, "int", 0, "int", 0, "int", w, "int", h, "ptr", src, "int", 0, "int", 0, "uint", 0x00CC0020)
+    DllCall("SelectObject", "ptr", src, "ptr", o1), DllCall("SelectObject", "ptr", dst, "ptr", o2)
+    DllCall("DeleteDC", "ptr", src), DllCall("DeleteDC", "ptr", dst), DllCall("ReleaseDC", "ptr", 0, "ptr", sdc)
+    DllCall("DeleteObject", "ptr", hbm)
+    return out
 }
 
 ; Filled rounded rectangle (r = corner radius).
@@ -2266,16 +2282,23 @@ BtnBitmap(pw, ph, text, hot, dis, primary) {
     k := A_ScreenDPI / 96
     w := pw / k, h := ph / k                                   ; drawing units
     ; primary: "danger" = red (Cancel). A disabled button is plain grey, never coloured.
+    glass := t.HasOwnProp("glass")
+    edge := ""
     if dis
-        fill := t.btn, textColor := t.muted
+        fill := glass ? t.dis : t.btn, textColor := t.muted
     else if primary = "danger"
-        fill := hot ? "E0453A" : "C42B1C", textColor := "FFFFFF"
+        fill := glass ? (hot ? t.dangerHot : t.danger) : (hot ? "E0453A" : "C42B1C"), textColor := "FFFFFF", edge := glass ? t.dangerEdge : ""
     else if primary
-        fill := hot ? t.priHot : t.pri, textColor := t.priText
+        fill := hot ? t.priHot : t.pri, textColor := t.priText, edge := glass ? t.priEdge : ""
     else
-        fill := hot ? t.btnHot : t.btn, textColor := t.fg
+        fill := hot ? t.btnHot : t.btn, textColor := t.fg, edge := glass ? t.edge : ""
     cv := Gp_Canvas(pw, ph, t.bg, true)
-    Gp_Round(cv, 0, 0, w, h, 8, fill)
+    if edge != "" {                                            ; glass: a 1-pixel outline, like the Python app
+        bw := Round(cv.k) / cv.k
+        Gp_Round(cv, 0, 0, w, h, 8, edge)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 8 - bw, fill)
+    } else
+        Gp_Round(cv, 0, 0, w, h, 8, fill)
     Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1)
     return Gp_Done(cv)
 }
@@ -2363,6 +2386,10 @@ ThemeCardDraw(b, hot := false) {
         bw := Round(2 * cv.k) / cv.k                          ; frame = whole pixels, same on every side
         Gp_Round(cv, 0, 0, w, h, 12, t.accent)
         Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
+    } else if t.HasOwnProp("glass") {                          ; glass: thin outline
+        bw := Round(cv.k) / cv.k
+        Gp_Round(cv, 0, 0, w, h, 12, t.edge)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 12 - bw, fill)
     } else
         Gp_Round(cv, 0, 0, w, h, 12, fill)
     switch b.key {
@@ -2387,7 +2414,7 @@ ThemeCardDraw(b, hot := false) {
 
 ; ---- A toggle switch (a pill with a knob) and its label; the label clicks it too ----
 ; getOn() / canUse() are asked every time it is drawn; when canUse() is false it is grey,
-; shows labelOff and ignores clicks (Frosted glass on a Windows too old for it).
+; shows labelOff and ignores clicks (Frosted glass on the light theme).
 ToggleSwitch(win, x, y, getOn, canUse, label, labelOff, onFlip) {
     pic := win.AddText("x" x " y" y " w40 h20 +0xE +0x100", "")
     pic.GetPos(, , &pw, &ph)

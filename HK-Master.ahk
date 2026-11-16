@@ -1060,17 +1060,24 @@ ShowSettings(*) {
 
     ; ---- Page 3: mouse & keys ---------------------------------------------------
     SecHeader(g, "x20 y58 w300", "Caps Lock")
-    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "On", 120)   ; beside its header, like the others
+    ; Each section's switch sits beside its header; unticked, the section is greyed out and
+    ; doesn't respond (PanelState). PanelMark / PanelSince collect the section's controls.
+    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "", 1, () => PanelState(pShift, shiftEn.Value))
+    mk := PanelMark(g)
     Muted(g.AddText("x20 y88 w300", "Shift + Caps Lock turns it on / off."))
     Muted(g.AddText("x20 y110 w300", "Caps Lock alone does nothing."))
+    pShift := PanelSince(g, mk)
 
     SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
-    fsH := AddCheck(g, 135, 171, u.fs.hscroll, "On", 120)
+    fsH := AddCheck(g, 135, 171, u.fs.hscroll, "", 1, () => PanelState(pSideScroll, fsH.Value))
+    mk := PanelMark(g)
     Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
+    pSideScroll := PanelSince(g, mk)
 
     ; Media Control on the right; the space to its right is where its menus open.
     SecHeader(g, "x345 y58 w110", "Media Control")
-    capsEn := AddCheck(g, 460, 59, u.caps.enabled, "On", 120)   ; beside its header
+    capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
+    mk := PanelMark(g)
     g.AddText("x345 y88 w110", "Hold")
     trigNames := []
     for t in TRIGGERS()
@@ -1087,11 +1094,13 @@ ShowSettings(*) {
         g.AddText("x345 y" (y + 4) " w110", row[2])
         capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
     }
+    pMedia := PanelSince(g, mk)
 
     ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
     sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
     SecHeader(g, "x20 y292 w110", "Side buttons")
-    sideEn := AddCheck(g, 135, 293, u.side.enabled, "On", 120)  ; beside its header
+    sideEn := AddCheck(g, 135, 293, u.side.enabled, "", 1, () => PanelState(pSide, sideEn.Value))
+    mk := PanelMark(g)
     Muted(g.AddText("x20 y318 w300", "Not in dialogs or File Explorer."))
     MouseArt(g, 20, 338)
 
@@ -1100,17 +1109,20 @@ ShowSettings(*) {
         sides.Push({app: e.app, back: e.back, fwd: e.fwd, both: e.both})
     LvHeader(g, 345, 292, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
     sideLv := NewList(g, "x345 y318 w485 h172", ["App", "Back", "Forward", "Both"], "wh")
+    sideLv.off := false                                        ; true while Side buttons is switched off
     sBtn1 := AddBtn(g, "x345 y500 w90", "Add...")
     sBtn2 := AddBtn(g, "x+8 w90", "Edit...")
     sBtn3 := AddBtn(g, "x+8 w90", "Delete")
     sBtn1.OnEvent("Click", (*) => AddSide()), sBtn2.OnEvent("Click", (*) => EditSide()), sBtn3.OnEvent("Click", (*) => DelSide())
     Anchor(sBtn1, "y"), Anchor(sBtn2, "y"), Anchor(sBtn3, "y")
-    sideLv.OnEvent("DoubleClick", (ctrl, row) => (row ? EditSide() : 0))
+    sideLv.OnEvent("DoubleClick", (ctrl, row) => (row && !ctrl.off ? EditSide() : 0))
     RefreshSides()
+    pSide := PanelSince(g, mk)
     EndPage(3)
 
     ; ---- Page 4: fast scroll ----------------------------------------------------
-    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360)
+    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360, () => PanelState(pFast, fsEn.Value))
+    mk := PanelMark(g)
     SecHeader(g, "x20 y102 w400", "Speed")
     fsBoost := AddSlideRow("Kick per flick",        136, u.fs.boost, 5, 100)
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
@@ -1126,6 +1138,7 @@ ShowSettings(*) {
     Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps."))
     Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically."))
     RefreshEx()
+    pFast := PanelSince(g, mk)
     EndPage(4)
 
     ; ---- Page 5: general --------------------------------------------------------
@@ -1194,6 +1207,7 @@ ShowSettings(*) {
     ApplyTheme(g)
     if !InstalledHere()
         startEn.lbl.SetFont("c" ThemeColors().muted)          ; greyed out
+    Panels()
     ShowPage(ro ? ro.page : 1)
     ShowTitled(g, ro ? "x" ro.x " y" ro.y : "", ro ? ro.w : 850, ro ? ro.h : 600 + TB_H)
     sc := A_ScreenDPI / 96
@@ -1363,6 +1377,12 @@ ShowSettings(*) {
         FadeAway(covers)
     }
 
+    ; Each section greyed out or not, by its switch.
+    Panels() {
+        PanelState(pShift, shiftEn.Value), PanelState(pSideScroll, fsH.Value), PanelState(pMedia, capsEn.Value)
+        PanelState(pSide, sideEn.Value), PanelState(pFast, fsEn.Value)
+    }
+
     Retheme() {
         t := ThemeColors()
         ApplyTheme(g)
@@ -1388,6 +1408,7 @@ ShowSettings(*) {
         DllCall("uxtheme\SetWindowTheme", "ptr", guideWin.Hwnd, t.dark ? "str" : "ptr", t.dark ? "DarkMode_Explorer" : 0, "ptr", 0)
         if !InstalledHere()
             startEn.lbl.SetFont("c" t.muted)
+        Panels()                                          ; greyed-out sections stay greyed out
         ShowPage(curPage)                                 ; tab colours
         DllCall("SetWindowPos", "ptr", g.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)  ; repaint the title bar
         g.GetClientPos(, , &cw4, &ch4)
@@ -1729,7 +1750,10 @@ SliderWheel(wParam, lParam, msg, hwnd) {
 }
 
 ; The slider a control belongs to (the slider itself, its number box or the box's pill), or 0.
-SliderAt(h) => !h ? 0 : SLIDERS.Has(h) ? h : SLIDER_OF.Has(h) ? SLIDER_OF[h] : 0
+SliderAt(h) {
+    s := !h ? 0 : SLIDERS.Has(h) ? h : SLIDER_OF.Has(h) ? SLIDER_OF[h] : 0
+    return s && DllCall("IsWindowEnabled", "ptr", s) ? s : 0      ; a greyed-out slider doesn't move
+}
 
 ; The mouse is over one of the settings window's sliders (or its number box).
 OverSlider() {
@@ -1876,6 +1900,8 @@ SliderThumbDraw(ctrl, lp) {
     hot := (mx >= l && mx < r && my >= t && my < b) || (state & 0x41)    ; under the mouse / pressed / hot
     th := ThemeColors()
     c := hot ? (th.dark ? "FFFFFF" : "1B1B1B") : th.accent
+    if !DllCall("IsWindowEnabled", "ptr", ctrl.Hwnd)              ; greyed-out section
+        c := th.dark ? "4A4D58" : "C2C2C2"
     ; Smooth (anti-aliased) pill with GDI+, straight onto the slider's drawing surface.
     Gp_Start()
     w := r - l, h := b - t
@@ -3035,19 +3061,22 @@ MouseArt(win, x, y) {
 MouseArtDraw(pic, hot := false) {
     t := ThemeColors()
     cv := Gp_Canvas(pic.px, pic.py, t.bg, true)
+    ac := t.accent, fg := t.fg, mu := t.muted
+    if pic.HasOwnProp("dis") && pic.dis                        ; section switched off: greyed
+        ac := t.dark ? "4A4D58" : "C2C2C2", fg := mu := t.dark ? "5C5F6B" : "B4B4B4"
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
     Gp_Line(cv, mx + 46, 8, mx + 46, 74, t.bg, 2)              ; gap between the two main buttons
     Gp_Line(cv, mx + 2, 74, mx + 90, 74, t.bg, 2)
-    Gp_Round(cv, mx + 39, 24, 14, 28, 7, t.accent)             ; wheel
-    Gp_Round(cv, mx - 7, 84, 10, 26, 4, t.accent)              ; forward button
-    Gp_Round(cv, mx - 7, 116, 10, 26, 4, t.accent)             ; back button
-    Gp_Line(cv, mx - 20, 97, mx - 9, 97, t.accent, 1.5)
-    Gp_Line(cv, mx - 20, 129, mx - 9, 129, t.accent, 1.5)
-    Gp_Text(cv, "Forward  ›  Redo", mx - 142, 85, 120, 24, t.fg, 12, true, 2)
-    Gp_Text(cv, "Back  ›  Undo", mx - 142, 117, 120, 24, t.fg, 12, true, 2)
-    Gp_Text(cv, "Both together  ›  Enter", 0, 174, 300, 22, t.muted, 12, false, 1)
+    Gp_Round(cv, mx + 39, 24, 14, 28, 7, ac)             ; wheel
+    Gp_Round(cv, mx - 7, 84, 10, 26, 4, ac)              ; forward button
+    Gp_Round(cv, mx - 7, 116, 10, 26, 4, ac)             ; back button
+    Gp_Line(cv, mx - 20, 97, mx - 9, 97, ac, 1.5)
+    Gp_Line(cv, mx - 20, 129, mx - 9, 129, ac, 1.5)
+    Gp_Text(cv, "Forward  ›  Redo", mx - 142, 85, 120, 24, fg, 12, true, 2)
+    Gp_Text(cv, "Back  ›  Undo", mx - 142, 117, 120, 24, fg, 12, true, 2)
+    Gp_Text(cv, "Both together  ›  Enter", 0, 174, 300, 22, mu, 12, false, 1)
     SetBitmap(pic, Gp_Done(cv))
 }
 
@@ -3199,6 +3228,59 @@ LvHeader(win, x, y, w, cols) {
     }
     l := Anchor(win.AddText("x" x " y" (y + 21) " w" w " h1"), "w")
     l.role := "line"
+}
+
+; The controls a window has now; PanelSince(win, mark) = the ones added after it (one section).
+PanelMark(win) {
+    m := Map()
+    for hw in win
+        m[hw] := 1
+    return m
+}
+
+PanelSince(win, mark) {
+    a := []
+    for hw, c in win
+        if !mark.Has(hw)
+            a.Push(c)
+    return a
+}
+
+; A section switched off (on = false): its text greyed, its buttons, key boxes, sliders and
+; number boxes greyed and not responding, its list greyed (double-click does nothing).
+; Switched on: back to normal.
+PanelState(ctrls, on) {
+    t := ThemeColors()
+    dim := t.dark ? "5C5F6B" : "B4B4B4"
+    for c in ctrls {
+        hw := c.Hwnd
+        if SCROLLS.Has(hw)
+            continue
+        if BTN.Has(hw) {                                       ; our buttons, drop-downs, key boxes, ×
+            c.Enabled := on, c.dis := !on
+            BtnRender(c, false)
+            continue
+        }
+        role := c.HasOwnProp("role") ? c.role : ""
+        switch c.Type {
+            case "Text":
+                if c.HasOwnProp("drawFn") {                    ; drawn pictures (the mouse)
+                    c.dis := !on
+                    c.drawFn.Call(c, false)
+                } else if role != "line"
+                    c.SetFont("c" (on ? (role = "muted" || role = "head" ? t.muted : t.fg) : dim))
+            case "Edit":                                       ; number boxes: can't be typed in
+                SendMessage(0xCF, on ? 0 : 1, 0, c)            ; EM_SETREADONLY
+                c.SetFont("c" (on ? t.fg : dim))
+            case "Slider":
+                c.Enabled := on
+                RefreshSlider(hw)
+            case "ListView":
+                c.off := !on
+                c.SetFont("c" (on ? t.fg : dim))
+                DllCall("RedrawWindow", "ptr", hw, "ptr", 0, "ptr", 0, "uint", 0x0185)
+        }
+    }
 }
 
 ; Grey hint text.

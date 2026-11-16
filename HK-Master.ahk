@@ -1063,6 +1063,10 @@ ShowSettings(*) {
     shiftEn := AddCheck(g, 20, 88, u.caps.shiftToggle, "Shift + Caps Lock turns it on / off", 290)
     Muted(g.AddText("x42 y110 w280", "Caps Lock alone does nothing."))
 
+    SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
+    fsH := AddCheck(g, 135, 171, u.fs.hscroll, "On", 120)
+    Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
+
     ; Media Control on the right; the space to its right is where its menus open.
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "On", 120)   ; beside its header
@@ -1106,7 +1110,6 @@ ShowSettings(*) {
 
     ; ---- Page 4: fast scroll ----------------------------------------------------
     fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360)
-    fsH  := AddCheck(g, 430, 58, u.fs.hscroll, "Sideways scroll  (Ctrl + Shift + wheel)", 380)
     SecHeader(g, "x20 y102 w400", "Speed")
     fsBoost := AddSlideRow("Kick per flick",        136, u.fs.boost, 5, 100)
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)

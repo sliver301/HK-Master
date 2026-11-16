@@ -178,6 +178,12 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf
 
 ; ---- Fast scroll (Shift + wheel) --------------------------------------------
+; Ctrl + Shift + wheel = horizontal scroll at normal speed, in any app. Checked first and on the
+; keys really held, so adding Ctrl while Shift is still down from a fast scroll (even mid-glide)
+; always scrolls sideways instead of letting the app see Ctrl + wheel (zoom).
+#HotIf cfg.fs.hscroll && GetKeyState("Ctrl", "P") && GetKeyState("Shift", "P")
+*WheelUp::HScroll(-1)
+*WheelDown::HScroll(1)
 ; Shift + wheel over a slider in the settings window: the slider glides, like fast scroll.
 #HotIf OverSlider()
 +WheelUp::SliderGlide(1)
@@ -185,10 +191,6 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf !fs.running && FastScrollAllowed()
 +WheelUp::FS_Start(1)
 +WheelDown::FS_Start(-1)
-; Ctrl + Shift + wheel = horizontal scroll at normal speed, in any app.
-#HotIf !fs.running && cfg.fs.hscroll
-^+WheelUp::HScroll(-1)
-^+WheelDown::HScroll(1)
 #HotIf fs.running
 *WheelUp::FS_Notch(1)
 *WheelDown::FS_Notch(-1)
@@ -627,9 +629,13 @@ RealWheel(delta, upKey, downKey) {
 ;   apps that ignore posted messages. Send (not {Blind}) lifts the held Ctrl and Shift around it,
 ;   so the app sees a plain sideways scroll, not a zoom.
 HScroll(dir) {
+    if fs.running
+        FS_Stop()                                 ; Ctrl added during a fast scroll: stop the glide
     CoordMode "Mouse", "Screen"
     MouseGetPos(, , &win, &ctl, 2)
-    h := ctl ? ctl : win
+    remote := false
+    try remote := REMOTE_APPS.Has(WinGetProcessName(win))
+    h := remote ? 0 : (ctl ? ctl : win)            ; remote desktop: only real input reaches the other PC
     while h {
         if DllCall("GetWindowLong", "Ptr", h, "Int", -16, "Int") & 0x100000 {   ; WS_HSCROLL
             Loop 3

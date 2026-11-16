@@ -4,6 +4,8 @@
 
 **Improvements**
 - Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.
+- Adding Ctrl while Shift is still held from a fast scroll now scrolls sideways (it zoomed before), and stops the glide.
+- Sideways scroll over Remote Desktop sends real sideways-wheel input to the other PC.
 
 ## 2.1.6
 

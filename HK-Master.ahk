@@ -992,8 +992,10 @@ TogglePause(name, pos, menu) {
 ; =============================================================================
 ShowSettings(*) {
     global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, UPD_LABEL
-    if SettingsGui {
-        SettingsGui.Show()
+    if SettingsGui {                                   ; already open: bring it back (not Show(): it would re-size it)
+        if DllCall("IsIconic", "ptr", SettingsGui.Hwnd)
+            DllCall("ShowWindow", "ptr", SettingsGui.Hwnd, "int", 9)    ; SW_RESTORE
+        try WinActivate("ahk_id " SettingsGui.Hwnd)
         return
     }
     u := PENDING ? PENDING : cfg          ; unsaved choices survive a theme change (see ThemeChanged)
@@ -2262,7 +2264,9 @@ Gp_Line(cv, x1, y1, x2, y2, hex, width := 1) {
 }
 
 ; Text inside the box x, y, w, h, centred vertically. align: 0 left, 1 centre, 2 right. px = text height in pixels.
-Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1) {
+; hint: 3 = smoothed and snapped to the pixel grid (any background), 5 = ClearType (only on a
+; solid fill, like a button's).
+Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1, hint := 3) {
     k := cv.k
     fam := 0, font := 0, fmt := 0, br := 0
     DllCall("gdiplus\GdipCreateFontFamilyFromName", "str", "Segoe UI", "ptr", 0, "ptr*", &fam)
@@ -2273,9 +2277,14 @@ Gp_Text(cv, text, x, y, w, h, hex, px := 12, bold := false, align := 1) {
     DllCall("gdiplus\GdipSetStringFormatFlags", "ptr", fmt, "int", 0x1000)       ; no wrapping
     DllCall("gdiplus\GdipSetStringFormatTrimming", "ptr", fmt, "int", 3)         ; "..." when too long
     DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
-    rc := Buffer(16, 0)
-    NumPut("float", x * k, "float", y * k, "float", w * k, "float", h * k, rc)
+    rc := Buffer(16, 0)                                        ; whole pixels: no half-pixel blur
+    NumPut("float", Round(x * k), "float", Round(y * k), "float", Round(w * k), "float", Round(h * k), rc)
+    ; Text was soft: the canvas draws shapes half a pixel offset (PixelOffsetMode Half) and with
+    ; plain smoothing, which blurs small letters. Text gets no offset and a grid-fitted hint.
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", cv.gr, "int", 0)
+    DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", cv.gr, "int", hint)
     DllCall("gdiplus\GdipDrawString", "ptr", cv.gr, "str", text, "int", -1, "ptr", font, "ptr", rc, "ptr", fmt, "ptr", br)
+    DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", cv.gr, "int", 4)
     DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
     DllCall("gdiplus\GdipDeleteStringFormat", "ptr", fmt)
     DllCall("gdiplus\GdipDeleteFont", "ptr", font)
@@ -2365,11 +2374,11 @@ BtnBitmap(pw, ph, text, hot, dis, primary, chevron := false) {
     } else
         Gp_Round(cv, 0, 0, w, h, 8, fill)
     if chevron {                                               ; a drop-down: text on the left, a ˅ on the right
-        Gp_Text(cv, text, 12, 0, w - 40, h, textColor, 12, primary, 0)
+        Gp_Text(cv, text, 12, 0, w - 40, h, textColor, 12, primary, 0, 5)
         Gp_Line(cv, w - 22, h / 2 - 2, w - 18, h / 2 + 2, textColor, 1.5)
         Gp_Line(cv, w - 18, h / 2 + 2, w - 14, h / 2 - 2, textColor, 1.5)
     } else
-        Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1)
+        Gp_Text(cv, text, 4, 0, w - 8, h, textColor, 12, primary, 1, 5)
     return Gp_Done(cv)
 }
 
@@ -2446,9 +2455,11 @@ ShowTitled(win, pos := "", cw := 0, ch := 0) {
         wx += (NumGet(rc, 8, "int") - wx - nw) // 2
         wy += (NumGet(rc, 12, "int") - wy - nh) // 2
     }
-    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", wx, "int", wy, "int", nw, "int", nh, "uint", 0x14)
     TitlePlace(win, nw)
-    win.Show()
+    ; Size, place and show in one step. (win.Show() here would size the window again as if it
+    ; had the Windows frame: that left empty space at the bottom and right.)
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", wx, "int", wy, "int", nw, "int", nh, "uint", 0x44)   ; NOZORDER | SHOWWINDOW
+    DllCall("SetForegroundWindow", "ptr", win.Hwnd)
 }
 
 ; Fit a TitleBar window to its controls again (a box was shown or hidden), keeping its place.
@@ -2649,10 +2660,10 @@ DropBtnMenu(b, *) {
         if i = b.sel
             m.Check(name)
     }
-    rc := Buffer(16)
+    rc := Buffer(16)                                           ; opens beside the drop-down (right side), top aligned
     DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
     CoordMode("Menu", "Screen")
-    m.Show(NumGet(rc, 0, "int"), NumGet(rc, 12, "int") + 2)
+    m.Show(NumGet(rc, 8, "int") + Round(6 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
 }
 
 DropBtnPick(b, i, *) {

@@ -4,6 +4,9 @@
 
 **New**
 - Frosted glass for the dark look, on by default: a tinted, blurred see-through background with soft panels and outlined buttons. Turn it off with the switch under the theme cards (Settings > General > Look).
+- Our own title bar on the settings window and the app's message boxes, in the same style as the rest (drag, double-click to maximise, snap and resize still work).
+- "Release notes" opens the notes right in the app, over the settings window (Close or Esc).
+- "GitHub repo" button (Settings > General > Updates) opens the project page.
 
 **Improvements**
 - Buttons, cards and the mouse picture have smooth see-through corners; lists have rounded corners; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders no longer show tick marks.

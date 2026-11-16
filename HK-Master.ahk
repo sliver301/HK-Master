@@ -13,6 +13,8 @@
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
 ;@Ahk2Exe-AddResource icons\tray-black.ico, 301
+; The release notes, shown in the app (Settings > General > Release notes).
+;@Ahk2Exe-AddResource CHANGELOG.md, CHANGELOG
 #SingleInstance Force
 SendMode "Input"
 SetWorkingDir A_ScriptDir
@@ -31,6 +33,7 @@ global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
 global APP_VERSION := "2.1.8"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
+global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
@@ -93,6 +96,11 @@ global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled ove
 FS_LASTUNDER.CaseSense := false
 global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
 OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
+global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
+global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
+global TB_H := 32                   ; its height (96-dpi units)
+OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
+OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
@@ -1136,9 +1144,10 @@ ShowSettings(*) {
     UPD_LABEL := g.AddText("x460 y92 w370", UpdateStatusText())
     autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
         , (*) => IniWrite(autoUpd.Value ? 1 : 0, INI, "General", "AutoUpdate"))      ; takes effect at once
-    updBtn := AddBtn(g, "x460 y152 w140", "Check now")
+    updBtn := AddBtn(g, "x460 y152 w116", "Check now")
     updBtn.OnEvent("Click", (*) => CheckForUpdates(true))
-    AddBtn(g, "x+8 w140", "Release notes").OnEvent("Click", (*) => Run(RELEASES_URL))
+    AddBtn(g, "x+8 w116", "Release notes").OnEvent("Click", (*) => ShowNotes(g))
+    AddBtn(g, "x+8 w116", "GitHub repo").OnEvent("Click", (*) => Run(REPO_URL))
 
     SecHeader(g, "x460 y220 w370", "Notifications")
     trayNote := AddCheck(g, 460, 250, IniRead(INI, "General", "HideTrayNotice", 0) != 1
@@ -1164,13 +1173,14 @@ ShowSettings(*) {
     closeBtn.OnEvent("Click", CloseGui)
     g.OnEvent("Close", CloseGui)
     g.OnEvent("Escape", CloseGui)
+    TitleBar(g, AppTitle(), ["min", "max", "close"], true)
     ApplyTheme(g)
     if !InstalledHere()
         startEn.lbl.SetFont("c" ThemeColors().muted)          ; greyed out
     ShowPage(ro ? ro.page : 1)
-    g.Show(ro ? "x" ro.x " y" ro.y " w" ro.w " h" ro.h : "w850 h600")
+    ShowTitled(g, ro ? "x" ro.x " y" ro.y : "", ro ? ro.w : 850, ro ? ro.h : 600 + TB_H)
     sc := A_ScreenDPI / 96
-    g.Opt("+MinSize" Round(850 * sc) "x" Round(600 * sc))
+    g.Opt("+MinSize" Round(850 * sc) "x" Round((600 + TB_H) * sc))
     g.OnEvent("Size", GuiSize)
     g.GetClientPos(, , &cw, &ch)
     GuiSize(g, 0, cw, ch)
@@ -1190,7 +1200,7 @@ ShowSettings(*) {
         if minMax = -1
             return
         k := A_ScreenDPI / 96
-        dw := Round(w / k) - 850, dh := Round(h / k) - 600
+        dw := Round(w / k) - 850, dh := Round(h / k) - 600 - TB_H     ; (TB_H: our title bar)
         for hw, a in ANCH {
             if !DllCall("IsWindow", "ptr", hw)
                 continue
@@ -1199,7 +1209,10 @@ ShowSettings(*) {
                 , "int", Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k), "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
-        PlaceGuide(guideWin, 10, 48, 830 + dw, 498 + dh)
+        PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
+        if TITLED.Has(gg.Hwnd)                          ; maximise / restore picture
+            for tbtn in TITLED[gg.Hwnd].btns
+                TitleBtnDraw(tbtn)
         if curPage != 1
             DllCall("ShowWindow", "ptr", guideWin.Hwnd, "int", 0)
         GuideScroll(0)
@@ -2040,7 +2053,7 @@ ThemeColors() {
     ; much darker than the solid Dark colours on purpose. edge = outline of drawn buttons.
     if GlassOn()
         return {dark: true, glass: true, bg: "000000", fg: "F3F4F8", muted: "A3A6B2", field: "101116", line: "2C2E38"
-            , btn: "1E1F27", btnHot: "30323D", edge: "424450", track: "3A3C48", accent: "4CC2FF"
+            , btn: "1E1F27", btnHot: "30323D", edge: "424450", track: "16171C", accent: "4CC2FF"
             , pri: "2254C4", priHot: "3865CB", priEdge: "4972CE", priText: "F3F4F8"
             , danger: "C83C34", dangerHot: "CD4F48", dangerEdge: "D15F58", dis: "24252D"}
     return IsDarkTheme()
@@ -2097,6 +2110,16 @@ ApplyTheme(win) {
     t := ThemeColors()
     win.BackColor := t.bg
     SetGlass(win, t.HasOwnProp("glass"))
+    if TITLED.Has(win.Hwnd) || POPUPS.Has(win.Hwnd) {
+        ; Windows 11: the thin window border in our outline colour (34 = DWMWA_BORDER_COLOR, BBGGRR).
+        c := Integer("0x" (t.HasOwnProp("edge") ? t.edge : t.line))
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 34, "uint*", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "int", 4)
+    }
+    if TITLED.Has(win.Hwnd) && TITLED[win.Hwnd].icon {          ; the title bar icon follows the theme
+        hi := LoadAppIcon(t.dark ? "white" : "black", Round(16 * A_ScreenDPI / 96))
+        if hi
+            try TITLED[win.Hwnd].icon.Value := "HICON:" hi
+    }
     try {                                                                       ; dark or light title bar
         if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
             DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
@@ -2201,6 +2224,14 @@ Gp_Done(cv) {
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
     DllCall("gdiplus\GdipDisposeImage", "ptr", cv.bmp)
     return hbm
+}
+
+; Filled rectangle.
+Gp_Rect(cv, x, y, w, h, hex) {
+    k := cv.k, br := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", Gp_Argb(hex), "ptr*", &br)
+    DllCall("gdiplus\GdipFillRectangle", "ptr", cv.gr, "ptr", br, "float", x * k, "float", y * k, "float", w * k, "float", h * k)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
 }
 
 ; Filled rounded rectangle (r = corner radius).
@@ -2347,6 +2378,257 @@ BtnRender(b, hot) {
     SetBitmap(b, BtnBitmap(b.px, b.py, b.btnText, hot, b.dis, b.HasOwnProp("danger") && b.danger ? "danger" : b.primary, b.HasOwnProp("items")))
 }
 
+; ---- Our own title bar --------------------------------------------------------------------
+; The Windows title bar can't match the glass or our buttons, so windows get our own: the app
+; icon, the title and minimise / maximise / close buttons drawn like the rest of the app.
+; Call TitleBar after all controls are added (it moves them down to make room), then
+; ShowTitled instead of Show. The Windows frame is removed (TitledNcCalc) but the window keeps
+; its title-bar style, so dragging, snapping, double-click to maximise, the minimise animation
+; and (baseW: resizable windows, laid out for that width) resizing at the edges still work
+; (TitledHitTest).
+TitleBar(win, title, kinds := ["close"], baseW := 0) {
+    for hw in TITLED.Clone()                                    ; forget closed windows
+        if !DllCall("IsWindow", "ptr", hw)
+            TITLED.Delete(hw)
+    k := A_ScreenDPI / 96, dy := Round(TB_H * k)
+    for hwnd, c in win {                                        ; everything moves down
+        c.GetPos(&cx, &cy)
+        DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", cx, "int", cy + dy, "int", 0, "int", 0, "uint", 0x15)
+        if ANCH.Has(hwnd)
+            ANCH[hwnd].y += TB_H
+    }
+    t := ThemeColors()
+    ico := 0
+    hi := LoadAppIcon(t.dark ? "white" : "black", Round(16 * k))
+    if hi
+        try ico := win.AddPicture("x12 y8 w16 h16", "HICON:" hi)
+    win.SetFont("s9 norm", "Segoe UI")
+    txt := win.AddText("x" (ico ? 38 : 14) " y0 w" (baseW ? 400 : 150) " h" TB_H " +0x200", title)   ; 0x200 = centred vertically
+    btns := []
+    for i, kind in kinds {
+        b := win.AddText("x" (baseW ? baseW - (kinds.Length - i + 1) * 46 : 0) " y0 w46 h" TB_H " +0xD +0x100", "")
+        b.GetPos(, , &pw, &ph)
+        b.px := pw, b.py := ph, b.kind := kind, b.dis := false, b.win := win.Hwnd
+        b.drawFn := TitleBtnDraw
+        BTN[b.Hwnd] := b                                        ; lighter under the mouse
+        b.OnEvent("Click", TitleBtnClick)
+        if baseW
+            Anchor(b, "x")                                      ; stays at the right edge
+        TitleBtnDraw(b)
+        btns.Push(b)
+    }
+    SetTimer(BtnHoverTick, 40)
+    TITLED[win.Hwnd] := {resize: baseW > 0, btns: btns, text: txt, icon: ico}
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", 0x37)   ; FRAMECHANGED: frame off now
+    if VerCompare(A_OSVersion, "10.0.22000") < 0 {               ; Windows 10: a 1-pixel frame strip keeps the shadow
+        m := Buffer(16, 0)
+        NumPut("int", 1, m, 8)                                  ; MARGINS.cyTopHeight
+        try DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", win.Hwnd, "ptr", m)
+    }
+}
+
+; Show a TitleBar window. pos = "x.. y.." or "" (centred); cw / ch = its size (96-dpi units),
+; or 0 = fit the controls. AHK sizes windows as if they had the Windows frame, so the size is
+; set here, then the title bar buttons go to the right edge.
+ShowTitled(win, pos := "", cw := 0, ch := 0) {
+    k := A_ScreenDPI / 96
+    win.Show(Trim(pos " Hide " (cw ? "w" cw " h" ch : "AutoSize")))
+    if cw
+        nw := Round(cw * k), nh := Round(ch * k)
+    else
+        TitledFit(win, &nw, &nh)
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", win.Hwnd, "ptr", rc)
+    wx := NumGet(rc, 0, "int"), wy := NumGet(rc, 4, "int")
+    if pos = "" {                                               ; AHK centred its own size: centre ours
+        wx += (NumGet(rc, 8, "int") - wx - nw) // 2
+        wy += (NumGet(rc, 12, "int") - wy - nh) // 2
+    }
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", wx, "int", wy, "int", nw, "int", nh, "uint", 0x14)
+    TitlePlace(win, nw)
+    win.Show()
+}
+
+; Fit a TitleBar window to its controls again (a box was shown or hidden), keeping its place.
+SizeTitled(win) {
+    TitledFit(win, &nw, &nh)
+    DllCall("SetWindowPos", "ptr", win.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", nw, "int", nh, "uint", 0x16)
+    TitlePlace(win, nw)
+}
+
+; The size that fits the visible controls, with the left margin on the right and at the bottom.
+TitledFit(win, &nw, &nh) {
+    tb := TITLED.Has(win.Hwnd) ? TITLED[win.Hwnd] : 0
+    skip := Map()
+    if tb {
+        for b in tb.btns
+            skip[b.Hwnd] := 1
+        skip[tb.text.Hwnd] := 1
+        if tb.icon
+            skip[tb.icon.Hwnd] := 1
+    }
+    minX := 99999, maxR := 0, maxB := 0
+    for hwnd, c in win {
+        if skip.Has(hwnd) || !(DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x10000000)   ; WS_VISIBLE
+            continue
+        c.GetPos(&cx, &cy, &cw, &ch)
+        minX := Min(minX, cx), maxR := Max(maxR, cx + cw), maxB := Max(maxB, cy + ch)
+    }
+    pad := minX = 99999 ? 0 : minX
+    nw := maxR + pad, nh := maxB + pad
+}
+
+; Fixed-size windows: the title bar buttons at the right edge, the title up to them.
+TitlePlace(win, nw) {
+    if !TITLED.Has(win.Hwnd) || TITLED[win.Hwnd].resize
+        return
+    tb := TITLED[win.Hwnd]
+    k := A_ScreenDPI / 96, bw := Round(46 * k)
+    for i, b in tb.btns
+        DllCall("SetWindowPos", "ptr", b.Hwnd, "ptr", 0, "int", nw - (tb.btns.Length - i + 1) * bw, "int", 0, "int", 0, "int", 0, "uint", 0x15)
+    tb.text.GetPos(&tx)
+    DllCall("SetWindowPos", "ptr", tb.text.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", Max(10, nw - tx - tb.btns.Length * bw - Round(8 * k)), "int", Round(TB_H * k), "uint", 0x16)
+}
+
+TitleBtnDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k, cx := Round(w / 2), cy := Round(h / 2)
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    close := b.kind = "close"
+    if hot
+        Gp_Rect(cv, 0, 0, w, h, close ? "C42B1C" : t.btnHot)
+    ic := hot && close ? "FFFFFF" : t.fg
+    switch b.kind {
+        case "min":
+            Gp_Line(cv, cx - 5, cy, cx + 5, cy, ic, 1)
+        case "max":
+            if DllCall("IsZoomed", "ptr", b.win) {             ; maximised: two windows = restore
+                GpBox(cv, cx - 5, cy - 3, 8, 8, ic)
+                Gp_Line(cv, cx - 3, cy - 5, cx + 5, cy - 5, ic, 1)
+                Gp_Line(cv, cx + 5, cy - 5, cx + 5, cy + 3, ic, 1)
+            } else
+                GpBox(cv, cx - 5, cy - 5, 10, 10, ic)
+        default:
+            Gp_Line(cv, cx - 5, cy - 5, cx + 5, cy + 5, ic, 1)
+            Gp_Line(cv, cx + 5, cy - 5, cx - 5, cy + 5, ic, 1)
+    }
+    SetBitmap(b, Gp_Done(cv))
+}
+
+GpBox(cv, x, y, w, h, hex) {
+    Gp_Line(cv, x, y, x + w, y, hex, 1), Gp_Line(cv, x + w, y, x + w, y + h, hex, 1)
+    Gp_Line(cv, x + w, y + h, x, y + h, hex, 1), Gp_Line(cv, x, y + h, x, y, hex, 1)
+}
+
+; The title bar buttons do what Windows' own do (WM_SYSCOMMAND), so the window's Close event runs.
+TitleBtnClick(b, *) {
+    h := b.win
+    switch b.kind {
+        case "min": PostMessage(0x112, 0xF020, 0, , "ahk_id " h)                                    ; SC_MINIMIZE
+        case "max": PostMessage(0x112, DllCall("IsZoomed", "ptr", h) ? 0xF120 : 0xF030, 0, , "ahk_id " h)   ; SC_RESTORE / SC_MAXIMIZE
+        default:    PostMessage(0x112, 0xF060, 0, , "ahk_id " h)                                    ; SC_CLOSE
+    }
+}
+
+; WM_NCCALCSIZE: the whole window is ours (no Windows frame or title bar). Maximised, Windows
+; puts the frame edges off screen, so the content is pulled in by that much.
+TitledNcCalc(wParam, lParam, msg, hwnd) {
+    if !wParam || !TITLED.Has(hwnd)
+        return
+    if DllCall("IsZoomed", "ptr", hwnd) {
+        pad := DllCall("GetSystemMetrics", "int", 92)          ; SM_CXPADDEDBORDER
+        fx := DllCall("GetSystemMetrics", "int", 32) + pad, fy := DllCall("GetSystemMetrics", "int", 33) + pad
+        NumPut("int", NumGet(lParam, 0, "int") + fx, "int", NumGet(lParam, 4, "int") + fy
+             , "int", NumGet(lParam, 8, "int") - fx, "int", NumGet(lParam, 12, "int") - fy, lParam)
+    }
+    return 0
+}
+
+; WM_NCHITTEST: our title bar acts as Windows' title bar; the edges resize (resizable windows).
+TitledHitTest(wParam, lParam, msg, hwnd) {
+    if !TITLED.Has(hwnd)
+        return
+    x := lParam & 0xFFFF, y := (lParam >> 16) & 0xFFFF
+    x := x > 32767 ? x - 65536 : x, y := y > 32767 ? y - 65536 : y
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", hwnd, "ptr", rc)
+    rx := x - NumGet(rc, 0, "int"), ry := y - NumGet(rc, 4, "int")
+    ww := NumGet(rc, 8, "int") - NumGet(rc, 0, "int"), wh := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+    k := A_ScreenDPI / 96
+    if TITLED[hwnd].resize && !DllCall("IsZoomed", "ptr", hwnd) {
+        e := Round(6 * k)
+        l := rx < e, r := rx >= ww - e, t := ry < e, bt := ry >= wh - e
+        if t && l
+            return 13                                            ; HTTOPLEFT
+        if t && r
+            return 14                                            ; HTTOPRIGHT
+        if bt && l
+            return 16                                            ; HTBOTTOMLEFT
+        if bt && r
+            return 17                                            ; HTBOTTOMRIGHT
+        if l
+            return 10                                            ; HTLEFT
+        if r
+            return 11                                            ; HTRIGHT
+        if t
+            return 12                                            ; HTTOP
+        if bt
+            return 15                                            ; HTBOTTOM
+    }
+    if ry < Round(TB_H * k)
+        return 2                                                 ; HTCAPTION
+}
+
+; ---- Release notes: a pop-up over the settings window, no title bar, Close or Esc ----------
+ShowNotes(owner) {
+    md := ChangelogText()
+    text := md = "" ? "The release notes aren't included in this copy of the app.`nThey are on GitHub (GitHub repo button)."
+                    : StrReplace(NotesText(RegExReplace(md, "^\s*#\s+Changelog\s*")), Chr(96))   ; no `code` marks
+    k := A_ScreenDPI / 96
+    d := Gui("-Caption +Owner" owner.Hwnd (VerCompare(A_OSVersion, "10.0.22000") < 0 ? " +Border" : ""))
+    hw := d.Hwnd
+    POPUPS[hw] := 1
+    d.SetFont("s12 bold", "Segoe UI")
+    d.AddText("x24 y20 w512", "What's new")
+    d.SetFont("s9 norm", "Segoe UI")
+    ed := d.AddEdit("x24 y56 w512 h336 ReadOnly Multi VScroll -E0x200", text)
+    SendMessage(0xD3, 3, Round(10 * k) | (Round(10 * k) << 16), ed)   ; EM_SETMARGINS: room at the left and right
+    AddBtn(d, "x436 y410 w100 h30", "Close").OnEvent("Click", (*) => d.Destroy())
+    d.OnEvent("Escape", (*) => d.Destroy())
+    ApplyTheme(d)
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hw, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
+    rc := Buffer(16)                                            ; centred on the settings window
+    DllCall("GetWindowRect", "ptr", owner.Hwnd, "ptr", rc)
+    x := (NumGet(rc, 0, "int") + NumGet(rc, 8, "int") - Round(560 * k)) // 2
+    y := (NumGet(rc, 4, "int") + NumGet(rc, 12, "int") - Round(462 * k)) // 2
+    owner.Opt("+Disabled")                                      ; stays put over the app until closed
+    d.Show("x" x " y" y " w560 h462")
+    ed.GetPos(, , &ew, &eh)
+    DllCall("SetWindowRgn", "ptr", ed.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", ew + 1, "int", eh + 1
+        , "int", Round(14 * k), "int", Round(14 * k), "ptr"), "int", 1)
+    SendMessage(0xB1, 0, 0, ed)                                 ; EM_SETSEL: nothing selected
+    WinWaitClose("ahk_id " hw)
+    owner.Opt("-Disabled")
+    try WinActivate("ahk_id " owner.Hwnd)
+    try POPUPS.Delete(hw)
+}
+
+; CHANGELOG.md: embedded in the exe (resource CHANGELOG), next to the script otherwise.
+ChangelogText() {
+    if !A_IsCompiled
+        return FileExist(A_ScriptDir "\CHANGELOG.md") ? FileRead(A_ScriptDir "\CHANGELOG.md", "UTF-8") : ""
+    try {
+        hr := DllCall("FindResource", "ptr", 0, "str", "CHANGELOG", "ptr", 10, "ptr")   ; RT_RCDATA
+        if !hr
+            return ""
+        sz := DllCall("SizeofResource", "ptr", 0, "ptr", hr, "uint")
+        p := DllCall("LockResource", "ptr", DllCall("LoadResource", "ptr", 0, "ptr", hr, "ptr"), "ptr")
+        return p ? StrGet(p, sz, "UTF-8") : ""
+    }
+    return ""
+}
+
 ; A drop-down drawn like our buttons: the chosen item and a ˅; a click opens a menu of the items.
 ; .sel = the chosen item's number.
 DropBtn(win, opts, items, sel) {
@@ -2359,6 +2641,7 @@ DropBtn(win, opts, items, sel) {
 
 DropBtnMenu(b, *) {
     m := Menu()
+    m.SetColor(ThemeColors().btn)                              ; the menu in the drop-down's own colour
     for i, name in b.items {
         m.Add(name, DropBtnPick.Bind(b, i))
         if i = b.sel
@@ -2809,9 +3092,10 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
     }
     d.OnEvent("Close", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
+    TitleBar(d, title = "" ? APP_NAME : title)
     ApplyTheme(d)
     SetWindowIcons(d)
-    d.Show("AutoSize")
+    ShowTitled(d)
     ; Rounded corners on Windows 11. Windows 10 keeps its square frame: clipping a window that has
     ; a title bar to a rounded shape showed its invisible resize border as a thick white rim.
     try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", d.Hwnd, "int", 33, "int*", 2, "int", 4)
@@ -2824,7 +3108,7 @@ AppDialog(text, buttons := ["OK"], title := "", opts := 0) {
     Pick(label, *) {
         if det && label = opts.details.label {            ; show / hide the details box
             det.Visible := !det.Visible
-            d.Show("AutoSize")
+            SizeTitled(d)
             return
         }
         if opts && opts.HasOwnProp("keepOpen") && opts.keepOpen.Has(label)
@@ -3372,9 +3656,10 @@ SideAppDialog(owner, e := 0) {
     AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
     hw := d.Hwnd
+    TitleBar(d, "Side buttons for an app")
     ApplyTheme(d)
     owner.Opt("+Disabled")
-    d.Show()
+    ShowTitled(d)
     WinWaitClose(hw)
     owner.Opt("-Disabled")
     WinActivate(owner.Hwnd)
@@ -3408,9 +3693,10 @@ SnippetDialog(owner, trig := "", txt := "") {
     AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
     hw := d.Hwnd
+    TitleBar(d, "Text shortcut")
     ApplyTheme(d)
     owner.Opt("+Disabled")
-    d.Show()
+    ShowTitled(d)
     WinWaitClose(hw)
     owner.Opt("-Disabled")
     WinActivate(owner.Hwnd)

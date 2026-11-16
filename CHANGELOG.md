@@ -10,6 +10,7 @@
 
 **Improvements**
 - Buttons, cards and the mouse picture have smooth see-through corners; lists and text boxes have rounded corners and our own thin rounded scroll bars in the theme colours; the Caps Lock "Hold" choice is a drop-down drawn like the other buttons; sliders are a thin line like the separators, without tick marks.
+- Drop-down and key menus are our own rounded menus in the app's colours, opening to the side; the slider number boxes are pills; the wheel over our scroll bars scrolls; Mouse & keys has a new layout (Caps Lock and Side buttons on the left, Media Control on the right).
 
 ## 2.1.7 (not released yet)
 

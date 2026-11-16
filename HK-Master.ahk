@@ -1061,10 +1061,6 @@ ShowSettings(*) {
     shiftEn := AddCheck(g, 20, 88, u.caps.shiftToggle, "Shift + Caps Lock turns it on / off", 290)
     Muted(g.AddText("x42 y110 w280", "Caps Lock alone does nothing."))
 
-    SecHeader(g, "x20 y146 w300", "Side buttons")
-    sideEn := AddCheck(g, 20, 176, u.side.enabled, "On  (not in dialogs and Explorer)", 290)
-    MouseArt(g, 20, 206)
-
     ; Media Control on the right; the space to its right is where its menus open.
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "On", 120)   ; beside its header
@@ -1084,13 +1080,20 @@ ShowSettings(*) {
         g.AddText("x345 y" (y + 4) " w110", row[2])
         capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
     }
-    Muted(g.AddText("x345 y278 w300", "Click a box to change its key."))
+    Muted(g.AddText("x652 y86 w178 h36", "Click a box to change its key."))
+
+    ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
+    sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
+    SecHeader(g, "x20 y292 w110", "Side buttons")
+    sideEn := AddCheck(g, 135, 293, u.side.enabled, "On", 120)  ; beside its header
+    Muted(g.AddText("x20 y318 w300", "Not in dialogs or File Explorer."))
+    MouseArt(g, 20, 338)
 
     sides := []
     for e in u.side.list
         sides.Push({app: e.app, back: e.back, fwd: e.fwd, both: e.both})
-    LvHeader(g, 345, 294, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
-    sideLv := NewList(g, "x345 y320 w485 h170", ["App", "Back", "Forward", "Both"], "wh")
+    LvHeader(g, 345, 292, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
+    sideLv := NewList(g, "x345 y318 w485 h172", ["App", "Back", "Forward", "Both"], "wh")
     sBtn1 := AddBtn(g, "x345 y500 w90", "Add...")
     sBtn2 := AddBtn(g, "x+8 w90", "Edit...")
     sBtn3 := AddBtn(g, "x+8 w90", "Delete")
@@ -1294,8 +1297,7 @@ ShowSettings(*) {
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
         sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value))))
-        vt := g.AddEdit("x565 y" (y + 2) " w60 h24 Number Center Limit9 -E0x200 +0x4", sl.Value)   ; type a value (0x4: see PillEdit)
-        PillEdit(vt)
+        vt := PillBox(g, 565, y + 2, 60, 24, sl.Value)            ; type a value
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
@@ -2604,24 +2606,29 @@ TitledHitTest(wParam, lParam, msg, hwnd) {
         return 2                                                 ; HTCAPTION
 }
 
-; A one-line number box shaped like a pill, its text centred both ways. It is a multi-line box
-; (ES_MULTILINE) only because those let us set where the text sits (EM_SETRECT); Enter still
-; goes to the window, not into the box.
-PillEdit(e) {
-    e.GetPos(, , &w, &h)
-    DllCall("SetWindowRgn", "ptr", e.Hwnd, "ptr", DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", w + 1, "int", h + 1
-        , "int", h, "int", h, "ptr"), "int", 1)
-    dc := DllCall("GetDC", "ptr", e.Hwnd, "ptr")
-    old := DllCall("SelectObject", "ptr", dc, "ptr", SendMessage(0x31, 0, 0, e), "ptr")    ; WM_GETFONT
-    tm := Buffer(64, 0)
-    DllCall("GetTextMetrics", "ptr", dc, "ptr", tm)
-    lh := NumGet(tm, 0, "int")                                   ; tmHeight
-    DllCall("SelectObject", "ptr", dc, "ptr", old)
-    DllCall("ReleaseDC", "ptr", e.Hwnd, "ptr", dc)
-    rc := Buffer(16, 0)
-    top := Max(0, (h - lh) // 2)
-    NumPut("int", Round(h / 2), "int", top, "int", w - Round(h / 2), "int", top + lh, rc)
-    SendMessage(0xB3, 0, rc.Ptr, e)                              ; EM_SETRECT
+; A number box shaped like a pill: our drawn pill (outline + field colour) with a borderless
+; one-line box inside it, centred both ways. Clicking the pill's ends puts the cursor in the box.
+PillBox(win, x, y, w, h, value) {
+    pill := win.AddText("x" x " y" y " w" w " h" h " +0xD +0x100", "")
+    pill.GetPos(&px, &py, &pw, &ph)
+    pill.px := pw, pill.py := ph
+    pill.drawFn := PillDraw
+    PillDraw(pill)
+    e := win.AddEdit("x" (x + 10) " y" y " w" (w - 20) " r1 Number Center Limit9 -E0x200", value)
+    e.GetPos(, , , &eh)
+    e.Move(, py + (ph - eh) // 2)                                ; middle of the pill
+    pill.OnEvent("Click", (*) => e.Focus())
+    return e
+}
+
+PillDraw(pill, hot := false) {
+    t := ThemeColors()
+    cv := Gp_Canvas(pill.px, pill.py, t.bg, true)
+    k := cv.k, w := pill.px / k, h := pill.py / k
+    bw := Round(k) / k                                          ; 1 pixel
+    Gp_Round(cv, 0, 0, w, h, h / 2, t.HasOwnProp("edge") ? t.edge : t.line)
+    Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, h / 2 - bw, t.field)
+    SetBitmap(pill, Gp_Done(cv))
 }
 
 ; ---- Our own scroll bars ------------------------------------------------------------------
@@ -2958,7 +2965,7 @@ BtnHoverTick() {
 ; The mouse with its side buttons, drawn for the Mouse & keys page. The whole picture
 ; (labels + mouse) is centred in its 300-wide box.
 MouseArt(win, x, y) {
-    pic := win.AddText("x" x " y" y " w300 h215 +0xD", "")
+    pic := win.AddText("x" x " y" y " w300 h200 +0xD", "")
     pic.GetPos(, , &pw, &ph)
     pic.px := pw, pic.py := ph
     pic.drawFn := MouseArtDraw

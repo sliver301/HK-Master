@@ -1059,25 +1059,26 @@ ShowSettings(*) {
     EndPage(2)
 
     ; ---- Page 3: mouse & keys ---------------------------------------------------
-    SecHeader(g, "x20 y58 w300", "Caps Lock")
-    ; Each section's switch sits beside its header; unticked, the section is greyed out and
-    ; doesn't respond (PanelState). PanelMark / PanelSince collect the section's controls.
-    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "", 1, () => PanelState(pShift, shiftEn.Value))
     mk := PanelMark(g)
+    SecHeader(g, "x20 y58 w110", "Caps Lock")
+    ; Each section's switch sits beside its header; unticked, the section (its header too) is
+    ; greyed out and doesn't respond (PanelState). PanelMark / PanelSince collect its controls;
+    ; the switch itself stays as it is.
+    shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "", 1, () => PanelState(pShift, shiftEn.Value))
     Muted(g.AddText("x20 y88 w300", "Shift + Caps Lock turns it on / off."))
     Muted(g.AddText("x20 y110 w300", "Caps Lock alone does nothing."))
     pShift := PanelSince(g, mk)
 
+    mk := PanelMark(g)
     SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
     fsH := AddCheck(g, 135, 171, u.fs.hscroll, "", 1, () => PanelState(pSideScroll, fsH.Value))
-    mk := PanelMark(g)
     Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
     pSideScroll := PanelSince(g, mk)
 
     ; Media Control on the right; the space to its right is where its menus open.
+    mk := PanelMark(g)
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
-    mk := PanelMark(g)
     g.AddText("x345 y88 w110", "Hold")
     trigNames := []
     for t in TRIGGERS()
@@ -1098,9 +1099,9 @@ ShowSettings(*) {
 
     ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
     sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
+    mk := PanelMark(g)
     SecHeader(g, "x20 y292 w110", "Side buttons")
     sideEn := AddCheck(g, 135, 293, u.side.enabled, "", 1, () => PanelState(pSide, sideEn.Value))
-    mk := PanelMark(g)
     Muted(g.AddText("x20 y318 w300", "Not in dialogs or File Explorer."))
     MouseArt(g, 20, 338)
 
@@ -1121,8 +1122,8 @@ ShowSettings(*) {
     EndPage(3)
 
     ; ---- Page 4: fast scroll ----------------------------------------------------
-    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360, () => PanelState(pFast, fsEn.Value))
     mk := PanelMark(g)
+    fsEn := AddCheck(g, 20, 58, u.fs.enabled, "Fast scroll  (Shift + wheel)", 360, () => PanelState(pFast, fsEn.Value))
     SecHeader(g, "x20 y102 w400", "Speed")
     fsBoost := AddSlideRow("Kick per flick",        136, u.fs.boost, 5, 100)
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)

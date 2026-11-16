@@ -2,6 +2,9 @@
 
 ## 2.1.7 (not released yet)
 
+**New**
+- Glass theme (Settings > General > Look): a dark look on a frosted, see-through background. Windows 11 22H2 or newer gets the full acrylic look, title bar included; older Windows 10 / 11 get a blur behind the window.
+
 **Improvements**
 - Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.
 - Adding Ctrl while Shift is still held from a fast scroll now scrolls sideways (it zoomed before), and stops the glide.

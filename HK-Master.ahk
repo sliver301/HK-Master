@@ -91,6 +91,7 @@ global cfg := LoadConfig()
 global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, real: false, probe: 0}   ; fast-scroll state
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
+global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
@@ -795,7 +796,7 @@ LoadConfig() {
         c.snippets.Push({trigger: "!!", text: "010xxxxxxxxxx"})
     }
 
-    c.theme := Rd("General", "Theme", "auto")        ; auto / light / dark
+    c.theme := Rd("General", "Theme", "auto")        ; auto / light / dark / glass
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -1100,7 +1101,7 @@ ShowSettings(*) {
     ; ---- Page 5: general --------------------------------------------------------
     SecHeader(g, "x20 y58 w400", "Look")
     themeCards := []
-    for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
+    for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"], ["glass", "Glass"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
 
     SecHeader(g, "x20 y220 w400", "Startup")
@@ -1998,7 +1999,7 @@ ImportSettings(owner) {
 ;  Theme (Settings > General > Theme: Auto / Light / Dark)
 ; =============================================================================
 IsDarkTheme() {
-    if cfg.theme = "dark"
+    if cfg.theme = "dark" || GlassOn()
         return true
     if cfg.theme = "light"
         return false
@@ -2008,9 +2009,51 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
+    ; Glass: a dark look on a frosted see-through background. The background is pure black,
+    ; which Windows shows as see-through over the blur; every other colour is laid on top of
+    ; the blur, so the panels are a little darker than in Dark to end up about as bright.
+    if GlassOn()
+        return {dark: true, glass: true, bg: "000000", fg: "F2F2F2", muted: "AAAAAA", field: "141414", line: "3A3A3A", btn: "262626", btnHot: "3C3C3C", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
     return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
+}
+
+; Frosted glass needs Windows 10 (1803) or newer: Windows 11 22H2+ gets the real acrylic
+; backdrop (title bar included), older builds get the Windows 10 blur behind the window.
+GlassOn() => cfg.theme = "glass" && VerCompare(A_OSVersion, "10.0.17134") >= 0
+
+; Turns the frosted backdrop on or off for a top-level window. Child windows (the Shortcuts
+; page) are drawn inside their parent's glass, so they are skipped.
+SetGlass(win, on) {
+    h := win.Hwnd
+    if !on && !GLASS_WINS.Has(h)                       ; never had it: leave Windows' default alone
+        return
+    if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
+        return
+    m := Buffer(16, 0)                                 ; margins -1 = the whole window is "frame"
+    if on
+        Loop 4
+            NumPut("int", -1, m, (A_Index - 1) * 4)
+    try DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", h, "ptr", m)
+    if VerCompare(A_OSVersion, "10.0.22621") >= 0 {
+        ; DWMWA_SYSTEMBACKDROP_TYPE: 3 = acrylic (frosted), 0 = Windows decides (the default)
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", h, "int", 38, "int*", on ? 3 : 0, "int", 4)
+    } else {
+        ; Windows 10 / early 11: an unnamed Windows function (SetWindowCompositionAttribute,
+        ; WCA_ACCENT_POLICY) with ACCENT_ENABLE_BLURBEHIND (3). Acrylic (4) lags when dragging there.
+        ap := Buffer(16, 0)
+        NumPut("int", on ? 3 : 0, ap)
+        wd := Buffer(A_PtrSize * 3, 0)
+        NumPut("int", 19, wd, 0)
+        NumPut("ptr", ap.Ptr, wd, A_PtrSize)
+        NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+        try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
+    }
+    if on
+        GLASS_WINS[h] := 1
+    else
+        GLASS_WINS.Delete(h)
 }
 
 ; Dark or light menus (tray menu, pop-up menus) for the whole app. Uses two unnamed Windows
@@ -2028,6 +2071,7 @@ ApplyAppMode() {
 ApplyTheme(win) {
     t := ThemeColors()
     win.BackColor := t.bg
+    SetGlass(win, t.HasOwnProp("glass"))
     try {                                                                       ; dark or light title bar
         if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
             DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
@@ -2301,6 +2345,11 @@ ThemeCardDraw(b, hot := false) {
         case "dark":                                           ; crescent moon
             Gp_Round(cv, cx - 14, cy - 14, 28, 28, 14, ic)
             Gp_Round(cv, cx - 6, cy - 19, 28, 28, 14, fill)
+        case "glass":                                          ; a pane of glass with two shine lines
+            Gp_Round(cv, cx - 17, cy - 17, 34, 34, 8, ic)
+            Gp_Round(cv, cx - 14.5, cy - 14.5, 29, 29, 6, fill)
+            Gp_Line(cv, cx - 9, cy + 1, cx + 1, cy - 9, ic, 2.2)
+            Gp_Line(cv, cx - 3, cy + 7, cx + 7, cy - 3, ic, 2.2)
         default:                                               ; auto: a screen, half light half dark
             Gp_Round(cv, cx - 22, cy - 17, 44, 30, 5, ic)
             Gp_Round(cv, cx - 19, cy - 14, 38, 24, 3, fill)

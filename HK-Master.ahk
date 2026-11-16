@@ -119,6 +119,7 @@ global ANCH := Map()          ; settings window: control hwnd -> how it follows 
 global BTN := Map()          ; hwnd -> button control
 global BTN_HOT := 0          ; the button currently highlighted
 global SLIDERS := Map()      ; settings window: slider hwnd -> {slider, value text, range}
+global SLIDER_OF := Map()    ; a slider's number box and its pill -> the slider hwnd (wheel over them)
 global PENDING := 0          ; settings kept while the window is rebuilt for a new theme
 global REOPEN := 0           ; page / position / size to restore after that
 global BASE_SIG := ""        ; settings window: the saved settings, to tell when something changed
@@ -424,7 +425,7 @@ FastScrollAllowed() {
         return false
     try {
         MouseGetPos(, , &win, &ctl, 2)
-        if ctl && SLIDERS.Has(ctl)      ; our own sliders: Shift + wheel moves them like the plain wheel (SliderWheel)
+        if ctl && SliderAt(ctl)         ; our own sliders: Shift + wheel moves them like the plain wheel (SliderWheel)
             return false
         return !OverCanvas(win, ctl)
     }
@@ -994,7 +995,7 @@ TogglePause(name, pos, menu) {
 ;  Settings window
 ; =============================================================================
 ShowSettings(*) {
-    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, UPD_LABEL
+    global SettingsGui, PENDING, REOPEN, BTN, BTN_HOT, SLIDERS, SLIDER_OF, UPD_LABEL
     if SettingsGui {                                   ; already open: bring it back (not Show(): it would re-size it)
         if DllCall("IsIconic", "ptr", SettingsGui.Hwnd)
             DllCall("ShowWindow", "ptr", SettingsGui.Hwnd, "int", 9)    ; SW_RESTORE
@@ -1006,7 +1007,7 @@ ShowSettings(*) {
     PENDING := 0
     ro := REOPEN
     REOPEN := 0
-    BTN := Map(), BTN_HOT := 0, SLIDERS := Map()
+    BTN := Map(), BTN_HOT := 0, SLIDERS := Map(), SLIDER_OF := Map()
 
     snips := []
     for s in u.snippets
@@ -1302,6 +1303,7 @@ ShowSettings(*) {
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
         SLIDERS[sl.Hwnd] := {sl: sl, vt: vt, lo: lo, hi: hi}
+        SLIDER_OF[vt.Hwnd] := sl.Hwnd, SLIDER_OF[vt.pill.Hwnd] := sl.Hwnd   ; the wheel over the box moves it too
         sl.OnNotify(-12, SliderThumbDraw)              ; NM_CUSTOMDRAW: our own pill-shaped thumb
         return sl
     }
@@ -1554,7 +1556,7 @@ ShowSettings(*) {
         global SettingsGui
         SetTimer(DirtyTick, 0)
         FS_Stop()                                  ; no glide may outlive the window it scrolls
-        SetTimer(SliderGlideTick, 0), SLIDERS.Clear()
+        SetTimer(SliderGlideTick, 0), SLIDERS.Clear(), SLIDER_OF.Clear()
         SettingsGui := 0
         GUIDE.hwnd := 0
         g.Destroy()
@@ -1720,13 +1722,17 @@ SliderWheel(wParam, lParam, msg, hwnd) {
     return 0
 }
 
-; The mouse is over one of the settings window's sliders.
+; The slider a control belongs to (the slider itself, its number box or the box's pill), or 0.
+SliderAt(h) => !h ? 0 : SLIDERS.Has(h) ? h : SLIDER_OF.Has(h) ? SLIDER_OF[h] : 0
+
+; The mouse is over one of the settings window's sliders (or its number box).
 OverSlider() {
     if !SLIDERS.Count
         return false
     try {
         MouseGetPos(, , , &h, 2)
-        return h && SLIDERS.Has(h) && DllCall("IsWindowVisible", "ptr", h)
+        h := SliderAt(h)
+        return h && DllCall("IsWindowVisible", "ptr", h)
     }
     return false
 }
@@ -1735,7 +1741,7 @@ OverSlider() {
 ; gliding and slows down (faster when Shift is let go), then lands on a multiple of 5.
 SliderGlide(dir) {
     MouseGetPos(, , , &h, 2)
-    if !SLIDERS.Has(h)
+    if !(h := SliderAt(h))
         return
     e := SLIDERS[h]
     if SLGLIDE.h != h || SLGLIDE.v * dir < 0                 ; new slider or reversed: start fresh
@@ -1951,7 +1957,7 @@ SetSlide(sl, v) {
 ; Move the slider under the mouse to the next multiple of 5 up (dir 1) or down (-1): 33 -> 35 / 30.
 SliderStep(dir) {
     MouseGetPos(, , , &h, 2)
-    if !SLIDERS.Has(h)
+    if !(h := SliderAt(h))
         return
     e := SLIDERS[h]
     cur := e.sl.Value
@@ -2217,7 +2223,9 @@ Gp_Canvas(w, h, bgHex, px := false) {
 
 ; The canvas as a 32-bit bitmap with premultiplied alpha (what AlphaBlend wants): see-through
 ; around the shapes, so on glass the corners are clear glass instead of black.
-Gp_Done(cv) {
+; additive: on glass, the picture is mixed into the glass the way Windows paints text boxes and
+; lists (colour added, alpha 0) instead of covering it, so the two look the same.
+Gp_Done(cv, additive := false) {
     w := cv.w, h := cv.h
     bi := Buffer(40, 0)                                      ; BITMAPINFOHEADER, 32 bits, top-down
     NumPut("uint", 40, bi, 0), NumPut("int", w, bi, 4), NumPut("int", -h, bi, 8)
@@ -2235,6 +2243,9 @@ Gp_Done(cv) {
                 Loop h
                     DllCall("RtlMoveMemory", "ptr", bits + (A_Index - 1) * w * 4, "ptr", scan + (A_Index - 1) * stride, "uptr", w * 4)
             DllCall("gdiplus\GdipBitmapUnlockBits", "ptr", cv.bmp, "ptr", bd)
+            if additive
+                Loop w * h
+                    NumPut("uchar", 0, bits, A_Index * 4 - 1)
         }
     }
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
@@ -2615,8 +2626,21 @@ PillBox(win, x, y, w, h, value) {
     pill.drawFn := PillDraw
     PillDraw(pill)
     e := win.AddEdit("x" (x + 10) " y" y " w" (w - 20) " r1 Number Center Limit9 -E0x200", value)
-    e.GetPos(, , , &eh)
-    e.Move(, py + (ph - eh) // 2)                                ; middle of the pill
+    e.pill := pill
+    ; Exactly one line of text high, in the middle of the pill (in pixels, from the real font).
+    dc := DllCall("GetDC", "ptr", e.Hwnd, "ptr")
+    old := DllCall("SelectObject", "ptr", dc, "ptr", SendMessage(0x31, 0, 0, e), "ptr")    ; WM_GETFONT
+    tm := Buffer(64, 0)
+    DllCall("GetTextMetrics", "ptr", dc, "ptr", tm)
+    lh := NumGet(tm, 0, "int")                                   ; tmHeight
+    DllCall("SelectObject", "ptr", dc, "ptr", old)
+    DllCall("ReleaseDC", "ptr", e.Hwnd, "ptr", dc)
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", pill.Hwnd, "ptr", rc)
+    DllCall("MapWindowPoints", "ptr", 0, "ptr", win.Hwnd, "ptr", rc, "uint", 2)
+    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
+    pad := Round((b - t) / 2)
+    DllCall("MoveWindow", "ptr", e.Hwnd, "int", l + pad, "int", t + (b - t - lh) // 2, "int", r - l - 2 * pad, "int", lh, "int", 1)
     pill.OnEvent("Click", (*) => e.Focus())
     return e
 }
@@ -2628,7 +2652,7 @@ PillDraw(pill, hot := false) {
     bw := Round(k) / k                                          ; 1 pixel
     Gp_Round(cv, 0, 0, w, h, h / 2, t.HasOwnProp("edge") ? t.edge : t.line)
     Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, h / 2 - bw, t.field)
-    SetBitmap(pill, Gp_Done(cv))
+    SetBitmap(pill, Gp_Done(cv, GlassOn()))                      ; on glass: mixed in like the box inside it
 }
 
 ; ---- Our own scroll bars ------------------------------------------------------------------

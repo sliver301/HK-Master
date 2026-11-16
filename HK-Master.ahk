@@ -3233,7 +3233,7 @@ LvHeader(win, x, y, w, cols) {
 ; The controls a window has now; PanelSince(win, mark) = the ones added after it (one section).
 PanelMark(win) {
     m := Map()
-    for hw in win
+    for hw, c in win                                           ; (two variables: one alone gets the control, not its hwnd)
         m[hw] := 1
     return m
 }

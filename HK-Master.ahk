@@ -796,7 +796,10 @@ LoadConfig() {
         c.snippets.Push({trigger: "!!", text: "010xxxxxxxxxx"})
     }
 
-    c.theme := Rd("General", "Theme", "auto")        ; auto / light / dark / glass
+    c.theme := Rd("General", "Theme", "auto")        ; auto / light / dark
+    c.glass := Rd("General", "Glass", 1) = 1           ; frosted glass behind the dark look (on unless turned off)
+    if c.theme = "glass"                               ; a short-lived test build had Glass as a 4th theme
+        c.theme := "dark"
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -899,6 +902,7 @@ SaveConfig(c) {
 
     IniWrite(3, INI, "General", "ConfigVersion")
     IniWrite(c.theme, INI, "General", "Theme")
+    IniWrite(c.glass ? 1 : 0, INI, "General", "Glass")
     try IniDelete(INI, "Snippets")
     IniWrite(c.snippets.Length, INI, "Snippets", "Count")
     for i, s in c.snippets {
@@ -1101,15 +1105,17 @@ ShowSettings(*) {
     ; ---- Page 5: general --------------------------------------------------------
     SecHeader(g, "x20 y58 w400", "Look")
     themeCards := []
-    for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"], ["glass", "Glass"]]
+    for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
+    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => IsDarkTheme() && GlassSupported()
+        , "Frosted glass", "Frosted glass (dark look only)", PickGlass)
 
-    SecHeader(g, "x20 y220 w400", "Startup")
-    startEn := AddCheck(g, 20, 250, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
+    SecHeader(g, "x20 y232 w400", "Startup")
+    startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
         , "Start with Windows", 400, (*) => SetStartup(startEn.Value))   ; takes effect at once
     if !InstalledHere() {                                ; a portable copy can't start with Windows
         startEn.Enabled := false
-        Muted(g.AddText("x42 y274 w380", "Install the app to use this."))
+        Muted(g.AddText("x42 y285 w380", "Install the app to use this."))
     }
 
     SecHeader(g, "x20 y310 w400", "Install")
@@ -1295,6 +1301,17 @@ ShowSettings(*) {
             return
         cfg.theme := key
         IniWrite(key, INI, "General", "Theme")
+        FadeRetheme()
+    }
+
+    ; The frosted-glass switch was flipped: same in-place recolour as a theme change.
+    PickGlass(on) {
+        cfg.glass := on
+        IniWrite(on ? 1 : 0, INI, "General", "Glass")
+        FadeRetheme()
+    }
+
+    FadeRetheme() {
         covers := [FadeCover(g)]                      ; the old look stays on top while we recolour
         for hd, dlg in APPDLGS
             covers.Push(FadeCover(dlg))
@@ -1461,6 +1478,7 @@ ShowSettings(*) {
     BuildConfig() {
         c := {snippets: snips, caps: {}, side: {}, fs: {}}
         c.theme := cfg.theme
+        c.glass := cfg.glass
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
@@ -1999,7 +2017,7 @@ ImportSettings(owner) {
 ;  Theme (Settings > General > Theme: Auto / Light / Dark)
 ; =============================================================================
 IsDarkTheme() {
-    if cfg.theme = "dark" || GlassOn()
+    if cfg.theme = "dark"
         return true
     if cfg.theme = "light"
         return false
@@ -2009,19 +2027,22 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
-    ; Glass: a dark look on a frosted see-through background. The background is pure black,
-    ; which Windows shows as see-through over the blur; every other colour is laid on top of
-    ; the blur, so the panels are a little darker than in Dark to end up about as bright.
+    ; Glass: the dark look on frosted glass. The background is pure black, which Windows shows
+    ; as see-through. Text, boxes and lists are added on top of the glass (so field and line
+    ; are darker than in Dark to end up about as bright); our drawn buttons and cards keep
+    ; their own colour (btn, btnHot) and get see-through corners (Gp_Canvas).
     if GlassOn()
-        return {dark: true, glass: true, bg: "000000", fg: "F2F2F2", muted: "AAAAAA", field: "141414", line: "3A3A3A", btn: "262626", btnHot: "3C3C3C", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
+        return {dark: true, glass: true, bg: "000000", fg: "F2F2F2", muted: "A8A8A8", field: "0E0E0E", line: "2A2A2A", btn: "333333", btnHot: "474747", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
     return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
 }
 
-; Frosted glass needs Windows 10 (1803) or newer: Windows 11 22H2+ gets the real acrylic
-; backdrop (title bar included), older builds get the Windows 10 blur behind the window.
-GlassOn() => cfg.theme = "glass" && VerCompare(A_OSVersion, "10.0.17134") >= 0
+; Frosted glass (Settings > General > Look, on by default) is for the dark look only: Windows
+; shows our black background as see-through, but every other colour a normal control draws is
+; added on top of the glass, so dark text on light glass would vanish. Needs Windows 10 1803+.
+GlassOn() => cfg.glass && IsDarkTheme() && GlassSupported()
+GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
 
 ; Turns the frosted backdrop on or off for a top-level window. Child windows (the Shortcuts
 ; page) are drawn inside their parent's glass, so they are skipped.
@@ -2031,25 +2052,20 @@ SetGlass(win, on) {
         return
     if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
         return
-    m := Buffer(16, 0)                                 ; margins -1 = the whole window is "frame"
-    if on
-        Loop 4
-            NumPut("int", -1, m, (A_Index - 1) * 4)
-    try DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", h, "ptr", m)
-    if VerCompare(A_OSVersion, "10.0.22621") >= 0 {
-        ; DWMWA_SYSTEMBACKDROP_TYPE: 3 = acrylic (frosted), 0 = Windows decides (the default)
-        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", h, "int", 38, "int*", on ? 3 : 0, "int", 4)
-    } else {
-        ; Windows 10 / early 11: an unnamed Windows function (SetWindowCompositionAttribute,
-        ; WCA_ACCENT_POLICY) with ACCENT_ENABLE_BLURBEHIND (3). Acrylic (4) lags when dragging there.
-        ap := Buffer(16, 0)
-        NumPut("int", on ? 3 : 0, ap)
-        wd := Buffer(A_PtrSize * 3, 0)
-        NumPut("int", 19, wd, 0)
-        NumPut("ptr", ap.Ptr, wd, A_PtrSize)
-        NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
-        try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
-    }
+    ; An unnamed Windows function (SetWindowCompositionAttribute, WCA_ACCENT_POLICY = 19):
+    ; ACCENT_ENABLE_BLURBEHIND (3) with flag 2 = lay our own tint over the blur. Windows 11's
+    ; own acrylic backdrop can't be tinted and came out too light, so this is used everywhere.
+    ; Tint: AABBGGRR, a near-black at 88% so the window is as dark as Dark, with a hint of
+    ; what's behind it.
+    ap := Buffer(16, 0)
+    NumPut("int", on ? 3 : 0, ap, 0)
+    NumPut("int", on ? 2 : 0, ap, 4)
+    NumPut("uint", on ? 0xE0121212 : 0, ap, 8)
+    wd := Buffer(A_PtrSize * 3, 0)
+    NumPut("int", 19, wd, 0)
+    NumPut("ptr", ap.Ptr, wd, A_PtrSize)
+    NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+    try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
     if on
         GLASS_WINS[h] := 1
     else
@@ -2147,13 +2163,14 @@ Gp_Canvas(w, h, bgHex, px := false) {
     DllCall("gdiplus\GdipSetSmoothingMode", "ptr", gr, "int", 4)        ; anti-aliased edges
     DllCall("gdiplus\GdipSetPixelOffsetMode", "ptr", gr, "int", 4)      ; Half: shapes sit on the pixel grid, edges even on all sides
     DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", gr, "int", 4)    ; anti-aliased text
-    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", Gp_Argb(bgHex))
-    return {bmp: bmp, gr: gr, k: k}
+    clear := bgHex = "000000" && GlassOn()           ; on glass: see-through around the shapes
+    DllCall("gdiplus\GdipGraphicsClear", "ptr", gr, "uint", clear ? 0 : Gp_Argb(bgHex))
+    return {bmp: bmp, gr: gr, k: k, clear: clear}
 }
 
 Gp_Done(cv) {
     hbm := 0
-    DllCall("gdiplus\GdipCreateHBITMAPFromBitmap", "ptr", cv.bmp, "ptr*", &hbm, "uint", 0xFF000000)
+    DllCall("gdiplus\GdipCreateHBITMAPFromBitmap", "ptr", cv.bmp, "ptr*", &hbm, "uint", cv.clear ? 0 : 0xFF000000)
     DllCall("gdiplus\GdipDeleteGraphics", "ptr", cv.gr)
     DllCall("gdiplus\GdipDisposeImage", "ptr", cv.bmp)
     return hbm
@@ -2294,8 +2311,9 @@ MouseArtDraw(pic, hot := false) {
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
-    Gp_Line(cv, mx + 46, 8, mx + 46, 74, t.bg, 2)              ; gap between the two main buttons
-    Gp_Line(cv, mx + 2, 74, mx + 90, 74, t.bg, 2)
+    gap := t.HasOwnProp("glass") ? "1A1A1A" : t.bg            ; (black would be a hole on glass)
+    Gp_Line(cv, mx + 46, 8, mx + 46, 74, gap, 2)               ; gap between the two main buttons
+    Gp_Line(cv, mx + 2, 74, mx + 90, 74, gap, 2)
     Gp_Round(cv, mx + 39, 24, 14, 28, 7, t.accent)             ; wheel
     Gp_Round(cv, mx - 7, 84, 10, 26, 4, t.accent)              ; forward button
     Gp_Round(cv, mx - 7, 116, 10, 26, 4, t.accent)             ; back button
@@ -2345,11 +2363,6 @@ ThemeCardDraw(b, hot := false) {
         case "dark":                                           ; crescent moon
             Gp_Round(cv, cx - 14, cy - 14, 28, 28, 14, ic)
             Gp_Round(cv, cx - 6, cy - 19, 28, 28, 14, fill)
-        case "glass":                                          ; a pane of glass with two shine lines
-            Gp_Round(cv, cx - 17, cy - 17, 34, 34, 8, ic)
-            Gp_Round(cv, cx - 14.5, cy - 14.5, 29, 29, 6, fill)
-            Gp_Line(cv, cx - 9, cy + 1, cx + 1, cy - 9, ic, 2.2)
-            Gp_Line(cv, cx - 3, cy + 7, cx + 7, cy - 3, ic, 2.2)
         default:                                               ; auto: a screen, half light half dark
             Gp_Round(cv, cx - 22, cy - 17, 44, 30, 5, ic)
             Gp_Round(cv, cx - 19, cy - 14, 38, 24, 3, fill)
@@ -2358,6 +2371,49 @@ ThemeCardDraw(b, hot := false) {
             Gp_Line(cv, cx - 10, cy + 20, cx + 10, cy + 20, ic, 2.5)
     }
     SetBitmap(b, Gp_Done(cv))
+}
+
+; ---- A toggle switch (a pill with a knob) and its label; the label clicks it too ----
+; getOn() / canUse() are asked every time it is drawn; when canUse() is false it is grey,
+; shows labelOff and ignores clicks (Frosted glass on the light theme).
+ToggleSwitch(win, x, y, getOn, canUse, label, labelOff, onFlip) {
+    pic := win.AddText("x" x " y" y " w40 h20 +0xE +0x100", "")
+    pic.GetPos(, , &pw, &ph)
+    pic.px := pw, pic.py := ph, pic.dis := false
+    pic.getOn := getOn, pic.canUse := canUse, pic.label := label, pic.labelOff := labelOff
+    pic.lbl := win.AddText("x" (x + 50) " y" (y + 2) " w340 +0x100", label)
+    pic.drawFn := ToggleSwitchDraw
+    BTN[pic.Hwnd] := pic                                       ; lighter under the mouse, like buttons
+    SetTimer(BtnHoverTick, 40)
+    flip := (*) => canUse() ? (onFlip(!getOn()), ToggleSwitchDraw(pic)) : 0
+    pic.OnEvent("Click", flip)
+    pic.lbl.OnEvent("Click", flip)
+    ToggleSwitchDraw(pic)
+    return pic
+}
+
+ToggleSwitchDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k
+    use := b.canUse.Call()
+    on := use && b.getOn.Call()
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if on {                                                    ; on: accent pill, knob on the right
+        Gp_Round(cv, 0, 0, w, h, h / 2, hot ? t.priHot : t.pri)
+        Gp_Round(cv, w - h + 4, 4, h - 8, h - 8, (h - 8) / 2, t.priText)
+    } else {                                                   ; off: outlined pill, knob on the left
+        edge := use ? (hot ? t.fg : t.muted) : t.line
+        Gp_Round(cv, 0, 0, w, h, h / 2, edge)
+        Gp_Round(cv, 1.5, 1.5, w - 3, h - 3, h / 2 - 1.5, t.dark ? "202020" : "F9F9F9")
+        Gp_Round(cv, 5, 5, h - 10, h - 10, (h - 10) / 2, edge)
+    }
+    SetBitmap(b, Gp_Done(cv))
+    try {
+        b.lbl.Text := use ? b.label : b.labelOff
+        b.lbl.role := use ? "" : "muted"                       ; ApplyTheme keeps this colour
+        b.lbl.SetFont("c" (use ? t.fg : t.muted))
+    }
 }
 
 ; The settings window's own icons: the small one (title bar) follows the app theme, the big one

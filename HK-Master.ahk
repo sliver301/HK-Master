@@ -1066,9 +1066,9 @@ ShowSettings(*) {
     MouseArt(g, 20, 206)
 
     ; Media Control on the right; the space to its right is where its menus open.
-    SecHeader(g, "x345 y58 w300", "Media Control")
-    capsEn := AddCheck(g, 345, 88, u.caps.enabled, "On", 260)
-    g.AddText("x345 y124 w110", "Hold")
+    SecHeader(g, "x345 y58 w110", "Media Control")
+    capsEn := AddCheck(g, 460, 59, u.caps.enabled, "On", 120)   ; beside its header
+    g.AddText("x345 y88 w110", "Hold")
     trigNames := []
     for t in TRIGGERS()
         trigNames.Push(t[2])
@@ -1076,21 +1076,21 @@ ShowSettings(*) {
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
             trigSel := i
-    trigDd := DropBtn(g, "x460 y118 w178", trigNames, trigSel)
+    trigDd := DropBtn(g, "x460 y82 w178", trigNames, trigSel)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
-        y := 152 + (i - 1) * 32
+        y := 116 + (i - 1) * 32
         g.AddText("x345 y" (y + 4) " w110", row[2])
         capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
     }
-    Muted(g.AddText("x345 y314 w300", "Click a box to change its key."))
+    Muted(g.AddText("x345 y278 w300", "Click a box to change its key."))
 
     sides := []
     for e in u.side.list
         sides.Push({app: e.app, back: e.back, fwd: e.fwd, both: e.both})
-    LvHeader(g, 345, 330, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
-    sideLv := NewList(g, "x345 y356 w485 h134", ["App", "Back", "Forward", "Both"], "wh")
+    LvHeader(g, 345, 294, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
+    sideLv := NewList(g, "x345 y320 w485 h170", ["App", "Back", "Forward", "Both"], "wh")
     sBtn1 := AddBtn(g, "x345 y500 w90", "Add...")
     sBtn2 := AddBtn(g, "x+8 w90", "Edit...")
     sBtn3 := AddBtn(g, "x+8 w90", "Delete")

@@ -3,7 +3,7 @@
 ## 2.1.7 (not released yet)
 
 **New**
-- Frosted glass for the dark look, on by default: a dark, blurred see-through background. Turn it off with the switch under the theme cards (Settings > General > Look).
+- Frosted glass, on by default, in both light and dark: the window background is a blurred see-through glass while text, boxes and buttons stay solid. Turn it off with the switch under the theme cards (Settings > General > Look).
 
 **Improvements**
 - Sideways scroll (Ctrl + Shift + wheel) sends real sideways-wheel input, so it also works in apps that ignored it before; classic lists and text boxes still get their own scroll-bar steps.

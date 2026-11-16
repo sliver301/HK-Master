@@ -1107,8 +1107,9 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
-    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, GlassSupported
-        , "Frosted glass", "Frosted glass (needs Windows 10 1803 or newer)", PickGlass)
+    ; Frosted glass switch: hidden while the glass is paused (GlassOn).
+    ; glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, GlassSupported
+    ;     , "Frosted glass", "Frosted glass (needs Windows 10 1803 or newer)", PickGlass)
 
     SecHeader(g, "x20 y232 w400", "Startup")
     startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
@@ -2039,7 +2040,7 @@ ThemeColors() {
 }
 
 ; Frosted glass (Settings > General > Look, on by default), light and dark. Needs Windows 10 1803+.
-GlassOn() => cfg.glass && GlassSupported()
+GlassOn() => false   ; paused: both see-through methods failed his test (washed text / click-through); see SetGlass
 GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
 
 ; Turns the frosted backdrop on or off for a top-level window (child windows, like the

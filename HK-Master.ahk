@@ -95,6 +95,7 @@ global fs := {v: 0, acc: 0, last: 0, running: false, t0: 0, gen: 0, lastFwd: 0, 
 global FS_LASTUNDER := Map()        ; exe -> window class last fast-scrolled over (for bug reports)
 FS_LASTUNDER.CaseSense := false
 global PICBMP := Map()              ; our drawn pictures (buttons, cards...): control hwnd -> 32-bit bitmap with alpha
+global PICFIELD := Map()     ; drawn pictures that sit on a text box's colour, not the window's
 OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
 global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
 OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
@@ -1081,7 +1082,6 @@ ShowSettings(*) {
         g.AddText("x345 y" (y + 4) " w110", row[2])
         capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
     }
-    Muted(g.AddText("x652 y86 w178 h36", "Click a box to change its key."))
 
     ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
     sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
@@ -1214,6 +1214,7 @@ ShowSettings(*) {
             return
         k := A_ScreenDPI / 96
         dw := Round(w / k) - 850, dh := Round(h / k) - 600 - TB_H     ; (TB_H: our title bar)
+        SendMessage(0x0B, 0, 0, gg)                     ; WM_SETREDRAW off: move everything, then paint once (no flashing)
         for hw, a in ANCH {
             if !DllCall("IsWindow", "ptr", hw)
                 continue
@@ -1233,6 +1234,7 @@ ShowSettings(*) {
         FitList(lv, [160])
         FitList(sideLv, [150, 110, 120])
         FitList(exLv, [])
+        SendMessage(0x0B, 1, 0, gg)                     ; WM_SETREDRAW on
         DllCall("RedrawWindow", "ptr", gg.Hwnd, "ptr", 0, "ptr", 0, "uint", 0x185)   ; repaint everything
     }
 
@@ -2359,7 +2361,8 @@ PicDrawItem(wParam, lParam, msg, hwnd) {
         return
     hdc := NumGet(lParam, P = 8 ? 32 : 24, "ptr")
     rc := lParam + (P = 8 ? 40 : 28)
-    c := Integer("0x" ThemeColors().bg)
+    t := ThemeColors()
+    c := Integer("0x" (PICFIELD.Has(h) ? t.field : t.bg))
     br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
     DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
     DllCall("DeleteObject", "ptr", br)
@@ -2617,42 +2620,69 @@ TitledHitTest(wParam, lParam, msg, hwnd) {
         return 2                                                 ; HTCAPTION
 }
 
-; A number box shaped like a pill: our drawn pill (outline + field colour) with a borderless
-; one-line box inside it, centred both ways. Clicking the pill's ends puts the cursor in the box.
+; A number box shaped like a pill: our drawn pill with a borderless one-line box in its middle.
+; Clicking the pill's ends puts the cursor in the box.
 PillBox(win, x, y, w, h, value) {
-    pill := win.AddText("x" x " y" y " w" w " h" h " +0xD +0x100", "")
-    pill.GetPos(&px, &py, &pw, &ph)
-    pill.px := pw, pill.py := ph
-    pill.drawFn := PillDraw
-    PillDraw(pill)
+    pill := BoxFrame(win, x, y, w, h, "pill")
     e := win.AddEdit("x" (x + 10) " y" y " w" (w - 20) " r1 Number Center Limit9 -E0x200", value)
     e.pill := pill
-    ; Exactly one line of text high, in the middle of the pill (in pixels, from the real font).
-    dc := DllCall("GetDC", "ptr", e.Hwnd, "ptr")
-    old := DllCall("SelectObject", "ptr", dc, "ptr", SendMessage(0x31, 0, 0, e), "ptr")    ; WM_GETFONT
-    tm := Buffer(64, 0)
-    DllCall("GetTextMetrics", "ptr", dc, "ptr", tm)
-    lh := NumGet(tm, 0, "int")                                   ; tmHeight
-    DllCall("SelectObject", "ptr", dc, "ptr", old)
-    DllCall("ReleaseDC", "ptr", e.Hwnd, "ptr", dc)
-    rc := Buffer(16)
-    DllCall("GetWindowRect", "ptr", pill.Hwnd, "ptr", rc)
-    DllCall("MapWindowPoints", "ptr", 0, "ptr", win.Hwnd, "ptr", rc, "uint", 2)
-    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
-    pad := Round((b - t) / 2)
-    DllCall("MoveWindow", "ptr", e.Hwnd, "int", l + pad, "int", t + (b - t - lh) // 2, "int", r - l - 2 * pad, "int", lh, "int", 1)
-    pill.OnEvent("Click", (*) => e.Focus())
+    FitInFrame(win, e, pill, h / 2)
     return e
 }
 
-PillDraw(pill, hot := false) {
+; A rounded box drawn behind a borderless text box: a 1 px outline and the text-box colour.
+; r: corner radius, or "pill" for fully round ends. On glass it is mixed into the glass the
+; way Windows paints the text box itself, so both are the same colour.
+BoxFrame(win, x, y, w, h, r := 8) {
+    f := win.AddText("x" x " y" y " w" w " h" h " +0xD +0x100", "")
+    f.GetPos(, , &pw, &ph)
+    f.px := pw, f.py := ph, f.r := r
+    f.drawFn := BoxFrameDraw
+    BoxFrameDraw(f)
+    return f
+}
+
+BoxFrameDraw(f, hot := false) {
     t := ThemeColors()
-    cv := Gp_Canvas(pill.px, pill.py, t.bg, true)
-    k := cv.k, w := pill.px / k, h := pill.py / k
+    cv := Gp_Canvas(f.px, f.py, t.bg, true)
+    k := cv.k, w := f.px / k, h := f.py / k
     bw := Round(k) / k                                          ; 1 pixel
-    Gp_Round(cv, 0, 0, w, h, h / 2, t.HasOwnProp("edge") ? t.edge : t.line)
-    Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, h / 2 - bw, t.field)
-    SetBitmap(pill, Gp_Done(cv, GlassOn()))                      ; on glass: mixed in like the box inside it
+    r := f.r = "pill" ? h / 2 : f.r
+    Gp_Round(cv, 0, 0, w, h, r, t.HasOwnProp("edge") ? t.edge : t.line)
+    Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, r - bw, t.field)
+    SetBitmap(f, Gp_Done(cv, GlassOn()))
+}
+
+; Puts a text box inside its frame, padX (96-dpi units) in from the sides. padY < 0: one line of
+; text high, in the middle (measured from the real font); otherwise padY in from top and bottom.
+; Clicking the frame puts the cursor in the box.
+FitInFrame(win, e, f, padX, padY := -1) {
+    k := A_ScreenDPI / 96
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", f.Hwnd, "ptr", rc)
+    DllCall("MapWindowPoints", "ptr", 0, "ptr", win.Hwnd, "ptr", rc, "uint", 2)
+    l := NumGet(rc, 0, "int"), t := NumGet(rc, 4, "int"), r := NumGet(rc, 8, "int"), b := NumGet(rc, 12, "int")
+    px := Round(padX * k)
+    if padY < 0 {
+        dc := DllCall("GetDC", "ptr", e.Hwnd, "ptr")
+        old := DllCall("SelectObject", "ptr", dc, "ptr", SendMessage(0x31, 0, 0, e), "ptr")    ; WM_GETFONT
+        tm := Buffer(64, 0)
+        DllCall("GetTextMetrics", "ptr", dc, "ptr", tm)
+        lh := NumGet(tm, 0, "int")                               ; tmHeight
+        DllCall("SelectObject", "ptr", dc, "ptr", old)
+        DllCall("ReleaseDC", "ptr", e.Hwnd, "ptr", dc)
+        ey := t + (b - t - lh) // 2
+    } else
+        ey := t + Round(padY * k), lh := b - t - 2 * Round(padY * k)
+    DllCall("MoveWindow", "ptr", e.Hwnd, "int", l + px, "int", ey, "int", r - l - 2 * px, "int", lh, "int", 1)
+    f.OnEvent("Click", (*) => e.Focus())
+}
+
+; Closes a dialog that disabled its owner. The owner is enabled first, so Windows hands the focus
+; straight back to it (closing first made Windows briefly activate another window: a flash).
+EndModal(d, owner) {
+    try owner.Opt("-Disabled")
+    try d.Destroy()
 }
 
 ; ---- Our own scroll bars ------------------------------------------------------------------
@@ -2661,8 +2691,10 @@ PillDraw(pill, hot := false) {
 ; (wheel, keys and positions stay Windows'), cut off with a window region, and ours sits in
 ; that strip. A timer keeps ours in step; dragging it or clicking its track scrolls the box.
 ; target: a list or text box, or "guide" (the Shortcuts page).
-ScrollOverlay(win, target) {
+ScrollOverlay(win, target, onField := false) {
     sb := win.AddText("x0 y0 w1 h1 +0xD +0x100", "")
+    if onField                                                  ; inside one of our box frames
+        PICFIELD[sb.Hwnd] := 1
     sb.target := target, sb.kind := IsObject(target) ? target.Type : "guide"
     sb.info := "", sb.hot := false, sb.px := 1, sb.py := 1
     SCROLLS[sb.Hwnd] := sb
@@ -2824,8 +2856,8 @@ ShowNotes(owner) {
     ed := d.AddEdit("x24 y56 w512 h336 ReadOnly Multi VScroll -E0x200", text)
     edSb := ScrollOverlay(d, ed)
     SendMessage(0xD3, 3, Round(10 * k) | (Round(10 * k) << 16), ed)   ; EM_SETMARGINS: room at the left and right
-    AddBtn(d, "x436 y410 w100 h30", "Close").OnEvent("Click", (*) => d.Destroy())
-    d.OnEvent("Escape", (*) => d.Destroy())
+    AddBtn(d, "x436 y410 w100 h30", "Close").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
     ApplyTheme(d)
     try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hw, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
     rc := Buffer(16)                                            ; centred on the settings window
@@ -2838,7 +2870,6 @@ ShowNotes(owner) {
     SendMessage(0xB1, 0, 0, ed)                                 ; EM_SETSEL: nothing selected
     WinWaitClose("ahk_id " hw)
     owner.Opt("-Disabled")
-    try WinActivate("ahk_id " owner.Hwnd)
     try POPUPS.Delete(hw)
 }
 
@@ -3957,8 +3988,10 @@ SideAppDialog(owner, e := 0) {
     d := Gui("+Owner" owner.Hwnd " +ToolWindow", "Side buttons for an app")
     d.SetFont("s9", "Segoe UI")
     d.AddText("x10 y14 w110", "App:")
-    eApp := d.AddEdit("x120 y10 w160", e ? e.app : "")
-    AddBtn(d, "x+6 yp w150", "Pick app...").OnEvent("Click", (*) => ChooseApp(d, (exe) => eApp.Value := exe))
+    fApp := BoxFrame(d, 120, 10, 160, 28)                       ; rounded, in the theme colours
+    eApp := d.AddEdit("x130 y14 w140 r1 -E0x200", e ? e.app : "")
+    FitInFrame(d, eApp, fApp, 10)
+    AddBtn(d, "x286 y10 w150", "Pick app...").OnEvent("Click", (*) => ChooseApp(d, (exe) => eApp.Value := exe))
     boxes := Map()
     for i, row in [["back", "Back"], ["fwd", "Forward"], ["both", "Both"]] {
         y := 46 + (i - 1) * 32
@@ -3967,8 +4000,9 @@ SideAppDialog(owner, e := 0) {
     }
     Muted(d.AddText("x10 y146 w430", "Click a box, press the keys. × clears."))
     AddBtn(d, "x10 y172 w80", "OK").OnEvent("Click", OkClick)
-    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
-    d.OnEvent("Escape", (*) => d.Destroy())
+    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
+    d.OnEvent("Close", (*) => EndModal(d, owner))
     hw := d.Hwnd
     TitleBar(d, "Side buttons for an app")
     ApplyTheme(d)
@@ -3990,7 +4024,7 @@ SideAppDialog(owner, e := 0) {
             return
         }
         res.val := {app: a, back: KeyBoxValue(boxes["back"]), fwd: KeyBoxValue(boxes["fwd"]), both: KeyBoxValue(boxes["both"])}
-        d.Destroy()
+        EndModal(d, owner)
     }
 }
 
@@ -3999,18 +4033,26 @@ SnippetDialog(owner, trig := "", txt := "") {
     res := {val: ""}
     d := Gui("+Owner" owner.Hwnd " +ToolWindow", "Text shortcut")
     d.SetFont("s9", "Segoe UI")
-    d.AddText(, "You type:")
-    eT := d.AddEdit("w340", trig)
-    d.AddText(, "You get:")
-    eX := d.AddEdit("w340 r5 WantReturn", txt)
-    AddBtn(d, "w80", "OK").OnEvent("Click", OkClick)
-    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => d.Destroy())
-    d.OnEvent("Escape", (*) => d.Destroy())
+    ; Rounded boxes in the theme colours (no Windows frame), with our scroll bar on the big one.
+    d.AddText("x12 y10 w340", "You type:")
+    fT := BoxFrame(d, 12, 30, 340, 30)
+    eT := d.AddEdit("x22 y34 w320 r1 -E0x200", trig)
+    d.AddText("x12 y72 w340", "You get:")
+    fX := BoxFrame(d, 12, 92, 340, 112)
+    eX := d.AddEdit("x20 y98 w324 h100 Multi WantReturn VScroll -E0x200", txt)
+    eXSb := ScrollOverlay(d, eX, true)
+    AddBtn(d, "x12 y218 w80", "OK").OnEvent("Click", OkClick)
+    AddBtn(d, "x+8 w80", "Cancel").OnEvent("Click", (*) => EndModal(d, owner))
+    d.OnEvent("Escape", (*) => EndModal(d, owner))
+    d.OnEvent("Close", (*) => EndModal(d, owner))
     hw := d.Hwnd
+    FitInFrame(d, eT, fT, 10)
+    FitInFrame(d, eX, fX, 8, 6)
     TitleBar(d, "Text shortcut")
     ApplyTheme(d)
     owner.Opt("+Disabled")
     ShowTitled(d)
+    ScrollPlace(eXSb)
     WinWaitClose(hw)
     owner.Opt("-Disabled")
     WinActivate(owner.Hwnd)
@@ -4023,6 +4065,6 @@ SnippetDialog(owner, trig := "", txt := "") {
             return
         }
         res.val := {trigger: t, text: StrReplace(eX.Value, "`r`n", "`n")}
-        d.Destroy()
+        EndModal(d, owner)
     }
 }

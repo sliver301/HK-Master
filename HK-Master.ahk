@@ -37,7 +37,7 @@ global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
-global UPD_TRIED := 0                          ; A_TickCount of the last automatic check that was started
+global UPD_TRIED := ""                         ; the 9:00 / 21:00 time the last automatic check was made for
 global UPD_WAKE := 0                           ; A_TickCount when the PC last woke from sleep / hibernation
 OnMessage(0x218, PowerWake)                    ; WM_POWERBROADCAST: the PC woke up -> check if a check was missed
 global SLGLIDE := {h: 0, v: 0.0, pos: 0.0}  ; settings slider glide (SliderGlide)
@@ -3834,20 +3834,23 @@ UpdateStatusText() {
 ; Automatic check (on unless [General] AutoUpdate=0), twice a day at 9:00 and 21:00. Runs every
 ; minute but only asks GitHub when the last successful check ([State] LastUpdateCheck) is older
 ; than the latest 9:00 / 21:00 that has passed, so a time missed while the PC was off, asleep or
-; hibernating is caught up once it is back on. A check that failed (offline) is tried again
-; 10 minutes later; just after waking, it waits 30 s for the network to come back.
+; hibernating is caught up once it is back on: one check, however many were missed. Only one
+; try per time: if it fails (offline), it waits for the next 9:00 / 21:00 instead of retrying,
+; since a PC that is offline is probably meant to be. Just after waking it waits 30 s for the
+; network to come back.
 AutoUpdateCheck() {
     global UPD_TRIED
     if IniRead(INI, "General", "AutoUpdate", 1) != 1
         return
     if UPD_WAKE && A_TickCount - UPD_WAKE < 30000
         return
+    slot := UpdateSlot()
     last := IniRead(INI, "State", "LastUpdateCheck", "")
-    if last != "" && last >= UpdateSlot()
+    if last != "" && last >= slot
         return
-    if UPD_TRIED && A_TickCount - UPD_TRIED < 600000
+    if UPD_TRIED = slot                                ; already tried for this time (and failed)
         return
-    UPD_TRIED := A_TickCount
+    UPD_TRIED := slot
     CheckForUpdates(false)
 }
 
@@ -3863,10 +3866,9 @@ UpdateSlot() {
 
 ; WM_POWERBROADCAST: back from sleep / hibernation (PBT_APMRESUMESUSPEND 7, PBT_APMRESUMEAUTOMATIC 18).
 PowerWake(wParam, lParam, msg, hwnd) {
-    global UPD_WAKE, UPD_TRIED
+    global UPD_WAKE
     if wParam = 7 || wParam = 18 {
         UPD_WAKE := A_TickCount
-        UPD_TRIED := 0                               ; a check that failed before sleeping may retry now
         SetTimer(AutoUpdateCheck, -31000)
     }
 }

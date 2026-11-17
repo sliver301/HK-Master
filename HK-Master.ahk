@@ -2149,7 +2149,7 @@ SetGlass(win, on) {
     ap := Buffer(16, 0)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x70F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
+    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x38F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
@@ -2201,15 +2201,18 @@ ApplyTheme(win) {
           if !pic {
               switch ctrl.Type {
                 case "Text", "Pic", "Checkbox", "Radio", "Slider":
+                    own := role != "bar" && role != "line" && ctrl.Type != "Slider"   ; (those set their own colour below)
                     if lg {
-                        if role != "bar" && role != "line"
-                            ctrl.Opt("+Background" t.key)
+                        if own
+                            ctrl.Opt("+Background" t.key), ctrl.glassBg := true
                         GlassLayer(hwnd, "key", t.key)
-                    } else if LAYERED.Has(hwnd) {
-                        ; back to the window colour ("Default" would be Windows' grey, not ours)
-                        if role != "bar" && role != "line" && ctrl.Type != "Slider"
+                    } else {
+                        ; Once light glass gave it its own background, it follows the window colour
+                        ; from then on, in every look ("Default" would be Windows' grey, not ours).
+                        if own && ctrl.HasOwnProp("glassBg")
                             ctrl.Opt("+Background" t.bg)
-                        GlassLayer(hwnd, "")
+                        if LAYERED.Has(hwnd)
+                            GlassLayer(hwnd, "")
                     }
                 case "Edit", "DDL", "ComboBox", "ListBox", "ListView", "Button":
                     GlassLayer(hwnd, lg ? "solid" : "")
@@ -3174,8 +3177,9 @@ MouseArtDraw(pic, hot := false) {
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
-    Gp_Line(cv, mx + 46, 8, mx + 46, 74, t.bg, 2)              ; gap between the two main buttons
-    Gp_Line(cv, mx + 2, 74, mx + 90, 74, t.bg, 2)
+    gap := t.HasOwnProp("key") ? t.line : t.bg                 ; (light glass: bg is black = clear glass)
+    Gp_Line(cv, mx + 46, 8, mx + 46, 74, gap, 2)               ; gap between the two main buttons
+    Gp_Line(cv, mx + 2, 74, mx + 90, 74, gap, 2)
     Gp_Round(cv, mx + 39, 24, 14, 28, 7, ac)             ; wheel
     Gp_Round(cv, mx - 7, 84, 10, 26, 4, ac)              ; forward button
     Gp_Round(cv, mx - 7, 116, 10, 26, 4, ac)             ; back button

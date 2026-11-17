@@ -5,6 +5,9 @@
 **New**
 - Frosted glass for the light look too (Settings > General > Look). Text, check boxes and sliders sit right on the glass; text boxes and lists are solid white.
 
+**Improvements**
+- The update check now runs twice a day, at 9 AM and 9 PM. If the PC was off, asleep or hibernating at that time, it checks soon after it's back on. (Before, it only checked at most once a day, which a PC that sleeps instead of shutting down could miss for days.)
+
 **Fixed**
 - With frosted glass on, the window no longer turns see-through for a moment when you minimize it.
 

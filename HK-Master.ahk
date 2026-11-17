@@ -37,6 +37,9 @@ global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
+global UPD_TRIED := 0                          ; A_TickCount of the last automatic check that was started
+global UPD_WAKE := 0                           ; A_TickCount when the PC last woke from sleep / hibernation
+OnMessage(0x218, PowerWake)                    ; WM_POWERBROADCAST: the PC woke up -> check if a check was missed
 global SLGLIDE := {h: 0, v: 0.0, pos: 0.0}  ; settings slider glide (SliderGlide)
 global UPD_LABEL := 0                          ; the "Version / last checked" text in Settings
 ; Second step of an update: the new exe (downloaded to Temp) was started as
@@ -164,10 +167,11 @@ if IniRead(INI, "State", "JustSaved", 0) = 1 {
 
 if UPDATED
     TrayTip("Updated to version " APP_VERSION ".", APP_NAME, "Iconi Mute")
-; Look for a new version 30 s after start, then every 6 hours, but at most once a day
-; (see AutoUpdateCheck). Quiet unless there is a new version.
+; Look for a new version at 9 AM and 9 PM. A check missed while the PC was off, asleep or
+; hibernating is done soon after it is back on (see AutoUpdateCheck). Quiet unless there is
+; a new version.
 SetTimer(AutoUpdateCheck, -30000)
-SetTimer(AutoUpdateCheck, 6 * 3600 * 1000)
+SetTimer(AutoUpdateCheck, 60000)
 
 ; Opened by the user: show the settings window. Opened by Windows at logon (or restarted): tray only.
 if !STARTUP_MODE && !RELOADED
@@ -3827,16 +3831,44 @@ UpdateStatusText() {
     return txt
 }
 
-; Automatic check: on unless [General] AutoUpdate=0, at most once a day ([State] LastUpdateCheck).
+; Automatic check (on unless [General] AutoUpdate=0), twice a day at 9:00 and 21:00. Runs every
+; minute but only asks GitHub when the last successful check ([State] LastUpdateCheck) is older
+; than the latest 9:00 / 21:00 that has passed, so a time missed while the PC was off, asleep or
+; hibernating is caught up once it is back on. A check that failed (offline) is tried again
+; 10 minutes later; just after waking, it waits 30 s for the network to come back.
 AutoUpdateCheck() {
+    global UPD_TRIED
     if IniRead(INI, "General", "AutoUpdate", 1) != 1
         return
+    if UPD_WAKE && A_TickCount - UPD_WAKE < 30000
+        return
     last := IniRead(INI, "State", "LastUpdateCheck", "")
-    try {
-        if last != "" && DateDiff(A_Now, last, "Hours") < 24
-            return
-    }
+    if last != "" && last >= UpdateSlot()
+        return
+    if UPD_TRIED && A_TickCount - UPD_TRIED < 600000
+        return
+    UPD_TRIED := A_TickCount
     CheckForUpdates(false)
+}
+
+; The latest 9:00 or 21:00 that has already passed, as YYYYMMDDHH24MISS.
+UpdateSlot() {
+    today := FormatTime(A_Now, "yyyyMMdd")
+    if today "210000" <= A_Now
+        return today "210000"
+    if today "090000" <= A_Now
+        return today "090000"
+    return FormatTime(DateAdd(today "210000", -1, "Days"), "yyyyMMddHHmmss")   ; yesterday 21:00
+}
+
+; WM_POWERBROADCAST: back from sleep / hibernation (PBT_APMRESUMESUSPEND 7, PBT_APMRESUMEAUTOMATIC 18).
+PowerWake(wParam, lParam, msg, hwnd) {
+    global UPD_WAKE, UPD_TRIED
+    if wParam = 7 || wParam = 18 {
+        UPD_WAKE := A_TickCount
+        UPD_TRIED := 0                               ; a check that failed before sleeping may retry now
+        SetTimer(AutoUpdateCheck, -31000)
+    }
 }
 
 ; Asks GitHub for the latest release without freezing the shortcuts (the request runs in the

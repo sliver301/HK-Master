@@ -38,7 +38,7 @@ Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 | 📂 **Folders** | **Shift + Back** goes up one folder in File Explorer and in any app's Open/Save dialog. |
 | 🔊 **Media control** | Hold **Caps Lock** (or Right Alt, Right Ctrl, Menu key, Scroll Lock) + **wheel** for volume, **+ middle click** for play/pause, **+ side buttons** for next/previous track. |
 | 🔠 **Caps Lock guard** | Caps Lock alone does nothing; **Shift + Caps Lock** turns it on and off. No more ACCIDENTAL CAPS. |
-| 🔄 **Auto-update** | Checks GitHub once a day and updates itself in one click. You can turn it off, or check by hand, in *General › Updates*. |
+| 🔄 **Auto-update** | Checks GitHub at 9 AM and 9 PM (or soon after the PC wakes up, if it missed one) and updates itself in one click. You can turn it off, or check by hand, in *General › Updates*. |
 | ⌨️ **Text shortcuts** | Type a short code like `@@` and get your full email address, phone number or any text. |
 
 Everything can be switched on/off and changed in the settings window (**Ctrl + Alt + H**, or double-click the tray icon). Light and dark themes included, with frosted glass for both.
@@ -79,7 +79,7 @@ This app is about 99% vibe-coded: I described what I wanted, tested it on my own
 
 HK-Master does not collect or send any personal data. Your settings and text shortcuts stay on your PC.
 
-The only network access is the update check: once a day it asks GitHub (`api.github.com`) for the latest release number, and it downloads a new version only when you click **Update**. You can turn the automatic check off in *General › Updates*. Otherwise this program will not transfer any information to other networked systems unless specifically requested by the user. GitHub's own [privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) applies to those requests.
+The only network access is the update check: twice a day it asks GitHub (`api.github.com`) for the latest release number, and it downloads a new version only when you click **Update**. You can turn the automatic check off in *General › Updates*. Otherwise this program will not transfer any information to other networked systems unless specifically requested by the user. GitHub's own [privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) applies to those requests.
 
 ## License
 

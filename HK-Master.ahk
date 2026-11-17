@@ -2269,7 +2269,8 @@ GlassLayer(h, mode, key := "") {
         LAYERED.Delete(h)
         return
     }
-    if !(ex & 0x80000)
+    fresh := !(ex & 0x80000)
+    if fresh
         DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex | 0x80000)                       ; WS_EX_LAYERED
     if mode = "key" {
         c := Integer("0x" key)
@@ -2277,6 +2278,13 @@ GlassLayer(h, mode, key := "") {
     } else
         DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", 0, "uchar", 255, "uint", 2)    ; LWA_ALPHA, fully solid
     LAYERED[h] := 1
+    ; A control already on screen when it becomes layered (switching to light glass) could stay
+    ; black (a list did): hiding and showing it again gives it a fresh surface.
+    if fresh && DllCall("IsWindowVisible", "ptr", h) {
+        DllCall("ShowWindow", "ptr", h, "int", 0)
+        DllCall("ShowWindow", "ptr", h, "int", 8)                                               ; SW_SHOWNA
+        DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+    }
 }
 
 ; Light glass: Windows lets clicks on a label's see-through (key colour) part fall through to

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.9 (not released yet)
+## 2.1.9
 
 **New**
 - Frosted glass for the light look too (Settings > General > Look). Text, check boxes and sliders sit right on the glass; text boxes and lists are solid white.

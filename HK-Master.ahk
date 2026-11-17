@@ -2266,7 +2266,8 @@ GlassLayer(h, mode, key := "") {
             DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex & ~0x80000)
             DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
         }
-        LAYERED.Delete(h)
+        if LAYERED.Has(h)                                       ; (Delete throws for a missing key)
+            LAYERED.Delete(h)
         return
     }
     fresh := !(ex & 0x80000)

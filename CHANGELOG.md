@@ -9,7 +9,6 @@
 - The update check now runs twice a day, at 9 AM and 9 PM. If the PC was off, asleep or hibernating at that time, it checks once soon after it's back on, however many times it missed. If you're offline it doesn't keep retrying; it waits for the next 9 AM or 9 PM. (Before, it only checked at most once a day, which a PC that sleeps instead of shutting down could miss for days.)
 
 **Fixed**
-- Light frosted glass: no black bars flashing the first time a tab or the install prompt opens.
 - With frosted glass on, the window no longer turns see-through for a moment when you minimize it.
 
 ## 2.1.8

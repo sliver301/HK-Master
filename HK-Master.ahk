@@ -105,6 +105,7 @@ OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
 OnMessage(0x201, LayeredClick)      ; light glass: a click through a label's see-through part still clicks it
 OnMessage(0x231, GlassMoveStart)     ; WM_ENTERSIZEMOVE: light glass goes plain while the window is dragged
 OnMessage(0x232, GlassMoveEnd)       ; WM_EXITSIZEMOVE: and frosted again when it is let go
+OnMessage(0x47, GlassShown)          ; WM_WINDOWPOSCHANGED: light glass labels paint at once when a window opens
 OnMessage(0x20A, ScrollWheel)       ; WM_MOUSEWHEEL over one of them: scroll its box
 global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
 global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
@@ -1314,7 +1315,13 @@ ShowSettings(*) {
         curPage := n
         for i, list in pages
             for ctrl in list
-                ctrl.Visible := (i = n)
+                if i != n
+                    ctrl.Visible := false
+        for ctrl in pages[n] {                          ; light glass: a layered control shown for the first
+            ctrl.Visible := true                        ; time is black until it paints, so paint it right away
+            if LAYERED.Has(ctrl.Hwnd)
+                DllCall("RedrawWindow", "ptr", ctrl.Hwnd, "ptr", 0, "ptr", 0, "uint", 0x0585)
+        }
         if GUIDE.page                                   ; the guide is placed once the window is shown
             DllCall("ShowWindow", "ptr", guideWin.Hwnd, "int", n = 1 ? 8 : 0)
         t := ThemeColors()
@@ -2352,6 +2359,14 @@ LayeredClick(wParam, lParam, msg, hwnd) {
 
 ; Layered controls stay black until they paint again after being shown (tested 2026-11-17),
 ; so every layered control in that window repaints.
+; A window with light glass labels was just shown (SWP_SHOWWINDOW): paint them before Windows
+; puts the window on screen, so they don't flash black (the install prompt did).
+GlassShown(wParam, lParam, msg, hwnd) {
+    if !LAYERED.Count || !(NumGet(lParam, 2 * A_PtrSize + 16, "uint") & 0x40)
+        return
+    RepaintLayered(hwnd)
+}
+
 RepaintLayered(winHwnd) {
     root := DllCall("GetAncestor", "ptr", winHwnd, "uint", 2, "ptr")                          ; GA_ROOT
     for h in LAYERED.Clone() {

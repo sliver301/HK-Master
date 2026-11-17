@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.8
+;@Ahk2Exe-SetVersion 2.1.9
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.8"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.9"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -106,6 +106,7 @@ global TB_H := 32                   ; its height (96-dpi units)
 OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
 OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
+global LAYERED := Map()             ; light glass: controls made layered (hwnd -> 1), see GlassLayer
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
@@ -1147,8 +1148,8 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
-    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => IsDarkTheme() && GlassSupported()
-        , "Frosted glass", "Frosted glass (dark look only)", PickGlass)
+    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => GlassSupported()
+        , "Frosted glass", "Frosted glass (needs a newer Windows 10)", PickGlass)
 
     SecHeader(g, "x20 y232 w400", "Startup")
     startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
@@ -1313,6 +1314,8 @@ ShowSettings(*) {
         for i, tc in tabs
             tc.SetFont(i = n ? "bold c" t.fg : "norm c" t.muted)
         bar.Move(10 + (n - 1) * 134)
+        if t.HasOwnProp("key")                          ; light glass: controls just shown paint again
+            SetTimer(RepaintLayered.Bind(g.Hwnd), -30)
     }
 
     ; A slider with its number: label, bar, value.
@@ -2102,7 +2105,15 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
-    ; Frosted glass (dark look only), the same recipe as Islam's "Claude Dual Logins" app.
+    ; Light frosted glass. Windows' own controls are made "layered" here (GlassLayer), so they
+    ; show as solid pixels instead of being added to the glass: text and check boxes sit on
+    ; key, a colour that turns see-through; text boxes and lists are solid white.
+    if GlassOn() && !IsDarkTheme()
+        return {dark: false, glass: true, bg: "000000", key: "E9EAEE", fg: "1B1B1B", muted: "5F6270", field: "FFFFFF", line: "C9CBD3"
+            , btn: "F7F7F9", btnHot: "FFFFFF", edge: "CDD0D8", track: "E3E4E9", accent: "0067C0"
+            , pri: "0067C0", priHot: "1A7FD0", priEdge: "0A5BAA", priText: "FFFFFF"
+            , danger: "C42B1C", dangerHot: "D63A2B", dangerEdge: "A82618", dis: "ECEDF1"}
+    ; Frosted glass, dark: the same recipe as Islam's "Claude Dual Logins" app.
     ; Windows ADDS every colour we paint to the tinted blur behind the window: pure black (bg)
     ; is clear glass, very dark colours are soft tints, and text has to be light. So these are
     ; much darker than the solid Dark colours on purpose. edge = outline of drawn buttons.
@@ -2116,10 +2127,10 @@ ThemeColors() {
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
 }
 
-; Frosted glass (Settings > General > Look, on by default) for the dark look. Light can't
-; have it: on glass every colour is added to the blur, so dark text on light glass vanishes.
-; Needs Windows 10 1803 or newer.
-GlassOn() => cfg.glass && IsDarkTheme() && GlassSupported()
+; Frosted glass (Settings > General > Look, on by default), dark or light. On glass every
+; colour Windows' controls paint is added to the blur, so on light glass the controls are made
+; layered (GlassLayer) to show as solid pixels. Needs Windows 10 1803 or newer.
+GlassOn() => cfg.glass && GlassSupported()
 GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
 
 ; Turns the frosted backdrop on or off for a top-level window (child windows, like the
@@ -2137,7 +2148,7 @@ SetGlass(win, on) {
     ap := Buffer(16, 0)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? 0xD8140F0C : 0, ap, 8)
+    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x98F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
@@ -2179,9 +2190,29 @@ ApplyTheme(win) {
         if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
             DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
     }
+    lg := t.HasOwnProp("key")                                   ; light glass
     for hwnd, ctrl in win {
         role := ctrl.HasOwnProp("role") ? ctrl.role : ""
         try {
+          ; Light glass: text-like controls on the see-through key colour, boxes solid.
+          ; Our drawn pictures (SS_OWNERDRAW) stay as they are: their pixels carry their own alpha.
+          pic := ctrl.Type = "Text" && (DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x1F) = 0xD
+          if !pic {
+              switch ctrl.Type {
+                case "Text", "Pic", "Checkbox", "Radio", "Slider":
+                    if lg {
+                        if role != "bar" && role != "line"
+                            ctrl.Opt("+Background" t.key)
+                        GlassLayer(hwnd, "key", t.key)
+                    } else if LAYERED.Has(hwnd) {
+                        if role != "bar" && role != "line" && ctrl.Type != "Slider"
+                            ctrl.Opt("+BackgroundDefault")
+                        GlassLayer(hwnd, "")
+                    }
+                case "Edit", "DDL", "ComboBox", "ListBox", "ListView", "Button":
+                    GlassLayer(hwnd, lg ? "solid" : "")
+              }
+          }
           switch ctrl.Type {
             case "Text":
                 if role = "bar"
@@ -2202,15 +2233,57 @@ ApplyTheme(win) {
                 ctrl.SetFont("c" t.fg)
                 SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
             case "Slider":
-                ctrl.Opt("+Background" t.bg)
+                ctrl.Opt("+Background" (lg ? t.key : t.bg))
             case "Checkbox", "Radio":
                 SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
           }
         }
     }
+    if lg {                                                     ; layered controls paint again once shown
+        SetTimer(RepaintLayered.Bind(win.Hwnd), -60)
+        SetTimer(RepaintLayered.Bind(win.Hwnd), -400)
+    }
     ; "" = back to the normal Windows look (used when switching from dark to light).
     SetTheme(h, name) => name = "" ? DllCall("uxtheme\SetWindowTheme", "ptr", h, "ptr", 0, "ptr", 0)
                                    : DllCall("uxtheme\SetWindowTheme", "ptr", h, "str", name, "ptr", 0)
+}
+
+; Light glass: a control made a "layered" child window, which Windows draws as solid pixels on
+; the glass instead of adding its colours to it (dark text would vanish). mode: "key" = the
+; key colour (the control's background) turns see-through, the rest is solid (text, check
+; boxes, sliders); "solid" = the whole control (text boxes, lists); "" = back to normal.
+GlassLayer(h, mode, key := "") {
+    ex := DllCall("GetWindowLong", "ptr", h, "int", -20, "int")
+    if mode = "" {
+        if ex & 0x80000 {
+            DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex & ~0x80000)
+            DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+        }
+        LAYERED.Delete(h)
+        return
+    }
+    if !(ex & 0x80000)
+        DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex | 0x80000)                       ; WS_EX_LAYERED
+    if mode = "key" {
+        c := Integer("0x" key)
+        DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "uchar", 0, "uint", 1)   ; LWA_COLORKEY
+    } else
+        DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", 0, "uchar", 255, "uint", 2)    ; LWA_ALPHA, fully solid
+    LAYERED[h] := 1
+}
+
+; Layered controls stay black until they paint again after being shown (tested 2026-11-17),
+; so every layered control in that window repaints.
+RepaintLayered(winHwnd) {
+    root := DllCall("GetAncestor", "ptr", winHwnd, "uint", 2, "ptr")                          ; GA_ROOT
+    for h in LAYERED.Clone() {
+        if !DllCall("IsWindow", "ptr", h) {
+            LAYERED.Delete(h)
+            continue
+        }
+        if DllCall("GetAncestor", "ptr", h, "uint", 2, "ptr") = root && DllCall("IsWindowVisible", "ptr", h)
+            DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+    }
 }
 
 ; Remember a control's start position and how it follows a window resize
@@ -2681,7 +2754,7 @@ BoxFrameDraw(f, hot := false) {
     r := f.r = "pill" ? h / 2 : f.r
     Gp_Round(cv, 0, 0, w, h, r, t.HasOwnProp("edge") ? t.edge : t.line)
     Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, r - bw, t.field)
-    SetBitmap(f, Gp_Done(cv, GlassOn()))
+    SetBitmap(f, Gp_Done(cv, GlassOn() && t.dark))              ; (light glass: solid, like the layered box)
 }
 
 ; Puts a text box inside its frame, padX (96-dpi units) in from the sides. padY < 0: one line of
@@ -2781,6 +2854,8 @@ ScrollDraw(sb) {
     sb.info := key
     k := A_ScreenDPI / 96
     cv := Gp_Canvas(sb.px, sb.py, t.bg, true)
+    if PICFIELD.Has(sb.Hwnd) && t.HasOwnProp("key")             ; light glass, inside a box: solid like the box
+        Gp_Rect(cv, 0, 0, sb.px / k, sb.py / k, t.field)
     if s.ok {
         gm := ScrollGeom(sb, s)
         bw := 6, x := (sb.px / k - bw) / 2

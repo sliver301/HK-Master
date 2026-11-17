@@ -5,6 +5,9 @@
 **New**
 - Frosted glass for the light look too (Settings > General > Look). Text, check boxes and sliders sit right on the glass; text boxes and lists are solid white.
 
+**Fixed**
+- With frosted glass on, the window no longer turns see-through for a moment when you minimize it.
+
 ## 2.1.8
 
 **New**

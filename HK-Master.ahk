@@ -2159,6 +2159,10 @@ SetGlass(win, on) {
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
     NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
     try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
+    ; Windows drops the frosted backdrop during the minimize / restore animation, so the window
+    ; showed see-through for a moment. With glass on, those animations are turned off
+    ; (DWMWA_TRANSITIONS_FORCEDISABLED = 3): it just disappears and comes back.
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", h, "int", 3, "int*", on ? 1 : 0, "int", 4)
     if on
         GLASS_WINS[h] := 1
     else

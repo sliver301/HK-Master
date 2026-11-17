@@ -99,6 +99,7 @@ global PICFIELD := Map()     ; drawn pictures that sit on a text box's colour, n
 OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
 global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
 OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
+OnMessage(0x201, LayeredClick)      ; light glass: a click through a label's see-through part still clicks it
 OnMessage(0x20A, ScrollWheel)       ; WM_MOUSEWHEEL over one of them: scroll its box
 global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
 global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
@@ -2148,7 +2149,7 @@ SetGlass(win, on) {
     ap := Buffer(16, 0)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x98F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
+    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x70F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
@@ -2205,8 +2206,9 @@ ApplyTheme(win) {
                             ctrl.Opt("+Background" t.key)
                         GlassLayer(hwnd, "key", t.key)
                     } else if LAYERED.Has(hwnd) {
+                        ; back to the window colour ("Default" would be Windows' grey, not ours)
                         if role != "bar" && role != "line" && ctrl.Type != "Slider"
-                            ctrl.Opt("+BackgroundDefault")
+                            ctrl.Opt("+Background" t.bg)
                         GlassLayer(hwnd, "")
                     }
                 case "Edit", "DDL", "ComboBox", "ListBox", "ListView", "Button":
@@ -2270,6 +2272,35 @@ GlassLayer(h, mode, key := "") {
     } else
         DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", 0, "uchar", 255, "uint", 2)    ; LWA_ALPHA, fully solid
     LAYERED[h] := 1
+}
+
+; Light glass: Windows lets clicks on a label's see-through (key colour) part fall through to
+; the window behind it, so tabs and labels needed several clicks. The window gets that click
+; here and passes it on to the label (or check box) under the mouse.
+LayeredClick(wParam, lParam, msg, hwnd) {
+    if !LAYERED.Count || LAYERED.Has(hwnd)
+        return
+    pt := Buffer(8)
+    DllCall("GetCursorPos", "ptr", pt)
+    px := NumGet(pt, 0, "int"), py := NumGet(pt, 4, "int")
+    rc := Buffer(16), cls := Buffer(64)
+    for h in LAYERED {
+        if DllCall("GetParent", "ptr", h, "ptr") != hwnd || !DllCall("IsWindowVisible", "ptr", h) || !DllCall("IsWindowEnabled", "ptr", h)
+            continue
+        DllCall("GetWindowRect", "ptr", h, "ptr", rc)
+        if px < NumGet(rc, 0, "int") || px >= NumGet(rc, 8, "int") || py < NumGet(rc, 4, "int") || py >= NumGet(rc, 12, "int")
+            continue
+        DllCall("GetClassName", "ptr", h, "ptr", cls, "int", 32)
+        c := StrGet(cls)
+        if c = "Static" && (DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x100) {       ; SS_NOTIFY: has a Click
+            PostMessage(0x111, DllCall("GetDlgCtrlID", "ptr", h, "int"), h, , "ahk_id " hwnd)   ; WM_COMMAND, STN_CLICKED
+            return 0
+        }
+        if c = "Button" {
+            PostMessage(0xF5, 0, 0, , "ahk_id " h)                                              ; BM_CLICK
+            return 0
+        }
+    }
 }
 
 ; Layered controls stay black until they paint again after being shown (tested 2026-11-17),

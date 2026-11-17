@@ -2147,9 +2147,11 @@ SetGlass(win, on) {
     if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
         return
     ap := Buffer(16, 0)
-    NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
+    ; Dark: acrylic on Windows 11 (blur on 10). Light: plain blur everywhere: Windows' acrylic
+    ; adds its own milky layer, so even with almost no tint light acrylic looked too opaque.
+    NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 && IsDarkTheme() ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x38F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
+    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x30F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)

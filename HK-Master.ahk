@@ -100,6 +100,8 @@ OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any w
 global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
 OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
 OnMessage(0x201, LayeredClick)      ; light glass: a click through a label's see-through part still clicks it
+OnMessage(0x231, GlassMoveStart)     ; WM_ENTERSIZEMOVE: light glass goes plain while the window is dragged
+OnMessage(0x232, GlassMoveEnd)       ; WM_EXITSIZEMOVE: and frosted again when it is let go
 OnMessage(0x20A, ScrollWheel)       ; WM_MOUSEWHEEL over one of them: scroll its box
 global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
 global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
@@ -2161,6 +2163,29 @@ SetGlass(win, on) {
         GLASS_WINS[h] := 1
     else
         GLASS_WINS.Delete(h)
+}
+
+; Light glass: dragging the window lagged behind the mouse (many layered labels on acrylic are
+; heavy for Windows to redraw on every step). While it is dragged or resized the glass is a
+; plain light colour; let go, it is frosted again. Dark glass doesn't need it.
+GlassMoveStart(wParam, lParam, msg, hwnd) {
+    if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
+        return
+    SetAccent(hwnd, 1, 2, 0xFFF0EFEE)                          ; ACCENT_ENABLE_GRADIENT: plain colour
+}
+
+GlassMoveEnd(wParam, lParam, msg, hwnd) {
+    if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
+        return
+    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, 0x10F3F3F3)
+}
+
+SetAccent(h, state, flags, tint) {
+    ap := Buffer(16, 0)
+    NumPut("int", state, ap, 0), NumPut("int", flags, ap, 4), NumPut("uint", tint, ap, 8)
+    wd := Buffer(A_PtrSize * 3, 0)
+    NumPut("int", 19, wd, 0), NumPut("ptr", ap.Ptr, wd, A_PtrSize), NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+    try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
 }
 
 ; Dark or light menus (tray menu, pop-up menus) for the whole app. Uses two unnamed Windows

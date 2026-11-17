@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 (not released yet)
+
+**Fixed**
+- Windows 10: light frosted glass was almost clear, so text was hard to read and had light edges around the letters. It is now a frosted light grey, like on Windows 11.
+
 ## 2.1.9
 
 **New**

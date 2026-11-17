@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.9
+;@Ahk2Exe-SetVersion 2.2.0
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.9"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.2.0"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -2164,7 +2164,7 @@ SetGlass(win, on) {
     ; 2026-11-17; acrylic keeps a milky layer of its own, so light uses almost no tint.)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x10F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
+    NumPut("uint", on ? GlassTint() : 0, ap, 8)                                     ; tint AABBGGRR
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
@@ -2192,7 +2192,17 @@ GlassMoveStart(wParam, lParam, msg, hwnd) {
 GlassMoveEnd(wParam, lParam, msg, hwnd) {
     if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
         return
-    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, 0x10F3F3F3)
+    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, GlassTint())
+}
+
+; The glass tint (AABBGGRR). Dark: a blue-black at 85%. Light on Windows 11: almost none, as
+; acrylic brings a milky layer of its own. Light on Windows 10: its plain blur has no such layer,
+; so the same tint left the glass nearly clear (dark wallpaper behind dark text, with light
+; fringes around the letters); a 75% light grey stands in for the acrylic layer.
+GlassTint() {
+    if IsDarkTheme()
+        return 0xD8140F0C
+    return VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 0x10F3F3F3 : 0xC0F3F3F3
 }
 
 SetAccent(h, state, flags, tint) {

@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.8
+;@Ahk2Exe-SetVersion 2.1.9
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,12 +31,15 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.8"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.1.9"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
 global UPDATE_API := "https://api.github.com/repos/sliver301/HK-Master/releases/latest"
 global UPD_BUSY := false
+global UPD_TRIED := ""                         ; the 9:00 / 21:00 time the last automatic check was made for
+global UPD_WAKE := 0                           ; A_TickCount when the PC last woke from sleep / hibernation
+OnMessage(0x218, PowerWake)                    ; WM_POWERBROADCAST: the PC woke up -> check if a check was missed
 global SLGLIDE := {h: 0, v: 0.0, pos: 0.0}  ; settings slider glide (SliderGlide)
 global UPD_LABEL := 0                          ; the "Version / last checked" text in Settings
 ; Second step of an update: the new exe (downloaded to Temp) was started as
@@ -99,6 +102,10 @@ global PICFIELD := Map()     ; drawn pictures that sit on a text box's colour, n
 OnMessage(0x2B, PicDrawItem)        ; WM_DRAWITEM: paints them. Set before any window opens (install / update box)
 global SCROLLS := Map()             ; our scroll bars (ScrollOverlay): hwnd -> control
 OnMessage(0x201, ScrollDown)        ; WM_LBUTTONDOWN on one of them: drag / jump
+OnMessage(0x201, LayeredClick)      ; light glass: a click through a label's see-through part still clicks it
+OnMessage(0x231, GlassMoveStart)     ; WM_ENTERSIZEMOVE: light glass goes plain while the window is dragged
+OnMessage(0x232, GlassMoveEnd)       ; WM_EXITSIZEMOVE: and frosted again when it is let go
+OnMessage(0x47, GlassShown)          ; WM_WINDOWPOSCHANGED: light glass labels paint at once when a window opens
 OnMessage(0x20A, ScrollWheel)       ; WM_MOUSEWHEEL over one of them: scroll its box
 global POPUPS := Map()              ; our frameless pop-ups (release notes): hwnd -> 1
 global TITLED := Map()              ; windows with our own title bar (TitleBar): hwnd -> {resize, btns, text, icon}
@@ -106,6 +113,7 @@ global TB_H := 32                   ; its height (96-dpi units)
 OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
 OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
+global LAYERED := Map()             ; light glass: controls made layered (hwnd -> 1), see GlassLayer
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
 ; DebugHoldMs=2000 pretends Shift is held that long after a glide starts (for testing).
@@ -160,10 +168,11 @@ if IniRead(INI, "State", "JustSaved", 0) = 1 {
 
 if UPDATED
     TrayTip("Updated to version " APP_VERSION ".", APP_NAME, "Iconi Mute")
-; Look for a new version 30 s after start, then every 6 hours, but at most once a day
-; (see AutoUpdateCheck). Quiet unless there is a new version.
+; Look for a new version at 9 AM and 9 PM. A check missed while the PC was off, asleep or
+; hibernating is done soon after it is back on (see AutoUpdateCheck). Quiet unless there is
+; a new version.
 SetTimer(AutoUpdateCheck, -30000)
-SetTimer(AutoUpdateCheck, 6 * 3600 * 1000)
+SetTimer(AutoUpdateCheck, 60000)
 
 ; Opened by the user: show the settings window. Opened by Windows at logon (or restarted): tray only.
 if !STARTUP_MODE && !RELOADED
@@ -1147,8 +1156,8 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
-    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => IsDarkTheme() && GlassSupported()
-        , "Frosted glass", "Frosted glass (dark look only)", PickGlass)
+    glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => GlassSupported()
+        , "Frosted glass", "Frosted glass (needs a newer Windows 10)", PickGlass)
 
     SecHeader(g, "x20 y232 w400", "Startup")
     startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
@@ -1306,13 +1315,21 @@ ShowSettings(*) {
         curPage := n
         for i, list in pages
             for ctrl in list
-                ctrl.Visible := (i = n)
+                if i != n
+                    ctrl.Visible := false
+        for ctrl in pages[n] {                          ; light glass: a layered control shown for the first
+            ctrl.Visible := true                        ; time is black until it paints, so paint it right away
+            if LAYERED.Has(ctrl.Hwnd)
+                DllCall("RedrawWindow", "ptr", ctrl.Hwnd, "ptr", 0, "ptr", 0, "uint", 0x0585)
+        }
         if GUIDE.page                                   ; the guide is placed once the window is shown
             DllCall("ShowWindow", "ptr", guideWin.Hwnd, "int", n = 1 ? 8 : 0)
         t := ThemeColors()
         for i, tc in tabs
             tc.SetFont(i = n ? "bold c" t.fg : "norm c" t.muted)
         bar.Move(10 + (n - 1) * 134)
+        if t.HasOwnProp("key")                          ; light glass: controls just shown paint again
+            SetTimer(RepaintLayered.Bind(g.Hwnd), -30)
     }
 
     ; A slider with its number: label, bar, value.
@@ -2102,7 +2119,15 @@ IsDarkTheme() {
 }
 
 ThemeColors() {
-    ; Frosted glass (dark look only), the same recipe as Islam's "Claude Dual Logins" app.
+    ; Light frosted glass. Windows' own controls are made "layered" here (GlassLayer), so they
+    ; show as solid pixels instead of being added to the glass: text and check boxes sit on
+    ; key, a colour that turns see-through; text boxes and lists are solid white.
+    if GlassOn() && !IsDarkTheme()
+        return {dark: false, glass: true, bg: "000000", key: "E9EAEE", fg: "1B1B1B", muted: "5F6270", field: "FFFFFF", line: "C9CBD3"
+            , btn: "F7F7F9", btnHot: "FFFFFF", edge: "CDD0D8", track: "E3E4E9", accent: "0067C0"
+            , pri: "0067C0", priHot: "1A7FD0", priEdge: "0A5BAA", priText: "FFFFFF"
+            , danger: "C42B1C", dangerHot: "D63A2B", dangerEdge: "A82618", dis: "ECEDF1"}
+    ; Frosted glass, dark: the same recipe as Islam's "Claude Dual Logins" app.
     ; Windows ADDS every colour we paint to the tinted blur behind the window: pure black (bg)
     ; is clear glass, very dark colours are soft tints, and text has to be light. So these are
     ; much darker than the solid Dark colours on purpose. edge = outline of drawn buttons.
@@ -2116,10 +2141,10 @@ ThemeColors() {
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
 }
 
-; Frosted glass (Settings > General > Look, on by default) for the dark look. Light can't
-; have it: on glass every colour is added to the blur, so dark text on light glass vanishes.
-; Needs Windows 10 1803 or newer.
-GlassOn() => cfg.glass && IsDarkTheme() && GlassSupported()
+; Frosted glass (Settings > General > Look, on by default), dark or light. On glass every
+; colour Windows' controls paint is added to the blur, so on light glass the controls are made
+; layered (GlassLayer) to show as solid pixels. Needs Windows 10 1803 or newer.
+GlassOn() => cfg.glass && GlassSupported()
 GlassSupported() => VerCompare(A_OSVersion, "10.0.17134") >= 0
 
 ; Turns the frosted backdrop on or off for a top-level window (child windows, like the
@@ -2135,18 +2160,47 @@ SetGlass(win, on) {
     if DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x40000000   ; WS_CHILD
         return
     ap := Buffer(16, 0)
+    ; Acrylic on Windows 11, blur on 10. (Plain blur on Windows 11 showed solid black, tested
+    ; 2026-11-17; acrylic keeps a milky layer of its own, so light uses almost no tint.)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? 0xD8140F0C : 0, ap, 8)
+    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x10F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
     NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
     try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
+    ; Windows drops the frosted backdrop during the minimize / restore animation, so the window
+    ; showed see-through for a moment. With glass on, those animations are turned off
+    ; (DWMWA_TRANSITIONS_FORCEDISABLED = 3): it just disappears and comes back.
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", h, "int", 3, "int*", on ? 1 : 0, "int", 4)
     if on
         GLASS_WINS[h] := 1
     else
         GLASS_WINS.Delete(h)
+}
+
+; Light glass: dragging the window lagged behind the mouse (many layered labels on acrylic are
+; heavy for Windows to redraw on every step). While it is dragged or resized the glass is a
+; plain light colour; let go, it is frosted again. Dark glass doesn't need it.
+GlassMoveStart(wParam, lParam, msg, hwnd) {
+    if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
+        return
+    SetAccent(hwnd, 1, 2, 0xFFF0EFEE)                          ; ACCENT_ENABLE_GRADIENT: plain colour
+}
+
+GlassMoveEnd(wParam, lParam, msg, hwnd) {
+    if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
+        return
+    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, 0x10F3F3F3)
+}
+
+SetAccent(h, state, flags, tint) {
+    ap := Buffer(16, 0)
+    NumPut("int", state, ap, 0), NumPut("int", flags, ap, 4), NumPut("uint", tint, ap, 8)
+    wd := Buffer(A_PtrSize * 3, 0)
+    NumPut("int", 19, wd, 0), NumPut("ptr", ap.Ptr, wd, A_PtrSize), NumPut("uptr", ap.Size, wd, A_PtrSize * 2)
+    try DllCall("user32\SetWindowCompositionAttribute", "ptr", h, "ptr", wd)
 }
 
 ; Dark or light menus (tray menu, pop-up menus) for the whole app. Uses two unnamed Windows
@@ -2179,9 +2233,33 @@ ApplyTheme(win) {
         if DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 20, "int*", t.dark ? 1 : 0, "int", 4) != 0
             DllCall("dwmapi\DwmSetWindowAttribute", "ptr", win.Hwnd, "int", 19, "int*", t.dark ? 1 : 0, "int", 4)  ; Windows 10 before 20H1
     }
+    lg := t.HasOwnProp("key")                                   ; light glass
     for hwnd, ctrl in win {
         role := ctrl.HasOwnProp("role") ? ctrl.role : ""
         try {
+          ; Light glass: text-like controls on the see-through key colour, boxes solid.
+          ; Our drawn pictures (SS_OWNERDRAW) stay as they are: their pixels carry their own alpha.
+          pic := ctrl.Type = "Text" && (DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x1F) = 0xD
+          if !pic {
+              switch ctrl.Type {
+                case "Text", "Pic", "Checkbox", "Radio", "Slider":
+                    own := role != "bar" && role != "line" && ctrl.Type != "Slider"   ; (those set their own colour below)
+                    if lg {
+                        if own
+                            ctrl.Opt("+Background" t.key), ctrl.glassBg := true
+                        GlassLayer(hwnd, "key", t.key)
+                    } else {
+                        ; Once light glass gave it its own background, it follows the window colour
+                        ; from then on, in every look ("Default" would be Windows' grey, not ours).
+                        if own && ctrl.HasOwnProp("glassBg")
+                            ctrl.Opt("+Background" t.bg)
+                        if LAYERED.Has(hwnd)
+                            GlassLayer(hwnd, "")
+                    }
+                case "Edit", "DDL", "ComboBox", "ListBox", "ListView", "Button":
+                    GlassLayer(hwnd, lg ? "solid" : "")
+              }
+          }
           switch ctrl.Type {
             case "Text":
                 if role = "bar"
@@ -2202,15 +2280,103 @@ ApplyTheme(win) {
                 ctrl.SetFont("c" t.fg)
                 SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
             case "Slider":
-                ctrl.Opt("+Background" t.bg)
+                ctrl.Opt("+Background" (lg ? t.key : t.bg))
             case "Checkbox", "Radio":
                 SetTheme(hwnd, t.dark ? "DarkMode_Explorer" : "")
           }
         }
     }
+    if lg {                                                     ; layered controls paint again once shown
+        SetTimer(RepaintLayered.Bind(win.Hwnd), -60)
+        SetTimer(RepaintLayered.Bind(win.Hwnd), -400)
+    }
     ; "" = back to the normal Windows look (used when switching from dark to light).
     SetTheme(h, name) => name = "" ? DllCall("uxtheme\SetWindowTheme", "ptr", h, "ptr", 0, "ptr", 0)
                                    : DllCall("uxtheme\SetWindowTheme", "ptr", h, "str", name, "ptr", 0)
+}
+
+; Light glass: a control made a "layered" child window, which Windows draws as solid pixels on
+; the glass instead of adding its colours to it (dark text would vanish). mode: "key" = the
+; key colour (the control's background) turns see-through, the rest is solid (text, check
+; boxes, sliders); "solid" = the whole control (text boxes, lists); "" = back to normal.
+GlassLayer(h, mode, key := "") {
+    ex := DllCall("GetWindowLong", "ptr", h, "int", -20, "int")
+    if mode = "" {
+        if ex & 0x80000 {
+            DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex & ~0x80000)
+            DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+        }
+        if LAYERED.Has(h)                                       ; (Delete throws for a missing key)
+            LAYERED.Delete(h)
+        return
+    }
+    fresh := !(ex & 0x80000)
+    if fresh
+        DllCall("SetWindowLong", "ptr", h, "int", -20, "int", ex | 0x80000)                       ; WS_EX_LAYERED
+    if mode = "key" {
+        c := Integer("0x" key)
+        DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "uchar", 0, "uint", 1)   ; LWA_COLORKEY
+    } else
+        DllCall("SetLayeredWindowAttributes", "ptr", h, "uint", 0, "uchar", 255, "uint", 2)    ; LWA_ALPHA, fully solid
+    LAYERED[h] := 1
+    ; A control already on screen when it becomes layered (switching to light glass) could stay
+    ; black (a list did): hiding and showing it again gives it a fresh surface.
+    if fresh && DllCall("IsWindowVisible", "ptr", h) {
+        DllCall("ShowWindow", "ptr", h, "int", 0)
+        DllCall("ShowWindow", "ptr", h, "int", 8)                                               ; SW_SHOWNA
+        DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+    }
+}
+
+; Light glass: Windows lets clicks on a label's see-through (key colour) part fall through to
+; the window behind it, so tabs and labels needed several clicks. The window gets that click
+; here and passes it on to the label (or check box) under the mouse.
+LayeredClick(wParam, lParam, msg, hwnd) {
+    if !LAYERED.Count || LAYERED.Has(hwnd)
+        return
+    pt := Buffer(8)
+    DllCall("GetCursorPos", "ptr", pt)
+    px := NumGet(pt, 0, "int"), py := NumGet(pt, 4, "int")
+    rc := Buffer(16), cls := Buffer(64)
+    for h in LAYERED {
+        if DllCall("GetParent", "ptr", h, "ptr") != hwnd || !DllCall("IsWindowVisible", "ptr", h) || !DllCall("IsWindowEnabled", "ptr", h)
+            continue
+        DllCall("GetWindowRect", "ptr", h, "ptr", rc)
+        if px < NumGet(rc, 0, "int") || px >= NumGet(rc, 8, "int") || py < NumGet(rc, 4, "int") || py >= NumGet(rc, 12, "int")
+            continue
+        DllCall("GetClassName", "ptr", h, "ptr", cls, "int", 32)
+        c := StrGet(cls)
+        if c = "Static" && (DllCall("GetWindowLong", "ptr", h, "int", -16, "int") & 0x100) {       ; SS_NOTIFY: has a Click
+            PostMessage(0x111, DllCall("GetDlgCtrlID", "ptr", h, "int"), h, , "ahk_id " hwnd)   ; WM_COMMAND, STN_CLICKED
+            return 0
+        }
+        if c = "Button" {
+            PostMessage(0xF5, 0, 0, , "ahk_id " h)                                              ; BM_CLICK
+            return 0
+        }
+    }
+}
+
+; Layered controls stay black until they paint again after being shown (tested 2026-11-17),
+; so every layered control in that window repaints.
+; A window with light glass labels was just shown (SWP_SHOWWINDOW): paint them before Windows
+; puts the window on screen, so they don't flash black (the install prompt did).
+GlassShown(wParam, lParam, msg, hwnd) {
+    if !LAYERED.Count || !(NumGet(lParam, 2 * A_PtrSize + 16, "uint") & 0x40)
+        return
+    RepaintLayered(hwnd)
+}
+
+RepaintLayered(winHwnd) {
+    root := DllCall("GetAncestor", "ptr", winHwnd, "uint", 2, "ptr")                          ; GA_ROOT
+    for h in LAYERED.Clone() {
+        if !DllCall("IsWindow", "ptr", h) {
+            LAYERED.Delete(h)
+            continue
+        }
+        if DllCall("GetAncestor", "ptr", h, "uint", 2, "ptr") = root && DllCall("IsWindowVisible", "ptr", h)
+            DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
+    }
 }
 
 ; Remember a control's start position and how it follows a window resize
@@ -2681,7 +2847,7 @@ BoxFrameDraw(f, hot := false) {
     r := f.r = "pill" ? h / 2 : f.r
     Gp_Round(cv, 0, 0, w, h, r, t.HasOwnProp("edge") ? t.edge : t.line)
     Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, r - bw, t.field)
-    SetBitmap(f, Gp_Done(cv, GlassOn()))
+    SetBitmap(f, Gp_Done(cv, GlassOn() && t.dark))              ; (light glass: solid, like the layered box)
 }
 
 ; Puts a text box inside its frame, padX (96-dpi units) in from the sides. padY < 0: one line of
@@ -2781,6 +2947,8 @@ ScrollDraw(sb) {
     sb.info := key
     k := A_ScreenDPI / 96
     cv := Gp_Canvas(sb.px, sb.py, t.bg, true)
+    if PICFIELD.Has(sb.Hwnd) && t.HasOwnProp("key")             ; light glass, inside a box: solid like the box
+        Gp_Rect(cv, 0, 0, sb.px / k, sb.py / k, t.field)
     if s.ok {
         gm := ScrollGeom(sb, s)
         bw := 6, x := (sb.px / k - bw) / 2
@@ -3068,8 +3236,9 @@ MouseArtDraw(pic, hot := false) {
     mx := 174                                                  ; left edge of the mouse body
     Gp_Round(cv, mx - 1, 7, 94, 152, 47, t.line)               ; body (with a thin edge)
     Gp_Round(cv, mx, 8, 92, 150, 46, t.btn)
-    Gp_Line(cv, mx + 46, 8, mx + 46, 74, t.bg, 2)              ; gap between the two main buttons
-    Gp_Line(cv, mx + 2, 74, mx + 90, 74, t.bg, 2)
+    gap := t.HasOwnProp("key") ? t.line : t.bg                 ; (light glass: bg is black = clear glass)
+    Gp_Line(cv, mx + 46, 8, mx + 46, 74, gap, 2)               ; gap between the two main buttons
+    Gp_Line(cv, mx + 2, 74, mx + 90, 74, gap, 2)
     Gp_Round(cv, mx + 39, 24, 14, 28, 7, ac)             ; wheel
     Gp_Round(cv, mx - 7, 84, 10, 26, 4, ac)              ; forward button
     Gp_Round(cv, mx - 7, 116, 10, 26, 4, ac)             ; back button
@@ -3677,16 +3846,46 @@ UpdateStatusText() {
     return txt
 }
 
-; Automatic check: on unless [General] AutoUpdate=0, at most once a day ([State] LastUpdateCheck).
+; Automatic check (on unless [General] AutoUpdate=0), twice a day at 9:00 and 21:00. Runs every
+; minute but only asks GitHub when the last successful check ([State] LastUpdateCheck) is older
+; than the latest 9:00 / 21:00 that has passed, so a time missed while the PC was off, asleep or
+; hibernating is caught up once it is back on: one check, however many were missed. Only one
+; try per time: if it fails (offline), it waits for the next 9:00 / 21:00 instead of retrying,
+; since a PC that is offline is probably meant to be. Just after waking it waits 30 s for the
+; network to come back.
 AutoUpdateCheck() {
+    global UPD_TRIED
     if IniRead(INI, "General", "AutoUpdate", 1) != 1
         return
+    if UPD_WAKE && A_TickCount - UPD_WAKE < 30000
+        return
+    slot := UpdateSlot()
     last := IniRead(INI, "State", "LastUpdateCheck", "")
-    try {
-        if last != "" && DateDiff(A_Now, last, "Hours") < 24
-            return
-    }
+    if last != "" && last >= slot
+        return
+    if UPD_TRIED = slot                                ; already tried for this time (and failed)
+        return
+    UPD_TRIED := slot
     CheckForUpdates(false)
+}
+
+; The latest 9:00 or 21:00 that has already passed, as YYYYMMDDHH24MISS.
+UpdateSlot() {
+    today := FormatTime(A_Now, "yyyyMMdd")
+    if today "210000" <= A_Now
+        return today "210000"
+    if today "090000" <= A_Now
+        return today "090000"
+    return FormatTime(DateAdd(today "210000", -1, "Days"), "yyyyMMddHHmmss")   ; yesterday 21:00
+}
+
+; WM_POWERBROADCAST: back from sleep / hibernation (PBT_APMRESUMESUSPEND 7, PBT_APMRESUMEAUTOMATIC 18).
+PowerWake(wParam, lParam, msg, hwnd) {
+    global UPD_WAKE
+    if wParam = 7 || wParam = 18 {
+        UPD_WAKE := A_TickCount
+        SetTimer(AutoUpdateCheck, -31000)
+    }
 }
 
 ; Asks GitHub for the latest release without freezing the shortcuts (the request runs in the

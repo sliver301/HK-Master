@@ -2274,9 +2274,9 @@ AccentButtonDraw(b, hot := false) {
 
 ; The swatch picker: a pop-up under the accent button (like our menus) with the palette, then
 ; "Windows accent" and "Custom colour..." (Windows' colour dialog, any colour).
-AccentPicker(btn, onPick) {
+AccentPicker(anchor, onPick) {   ; (not "btn": names ignore case, and BTN is our buttons map)
     k := A_ScreenDPI / 96
-    owner := DllCall("GetAncestor", "ptr", btn.Hwnd, "uint", 2, "ptr")       ; GA_ROOT
+    owner := DllCall("GetAncestor", "ptr", anchor.Hwnd, "uint", 2, "ptr")       ; GA_ROOT
     m := Gui("-Caption +ToolWindow +AlwaysOnTop +Owner" owner (VerCompare(A_OSVersion, "10.0.22000") < 0 ? " +Border" : ""))
     m.MarginX := 0, m.MarginY := 0
     mh := m.Hwnd                                                ; kept: m.Hwnd can't be read once it's closed
@@ -2284,13 +2284,15 @@ AccentPicker(btn, onPick) {
     cols := ACCENT_HUES().Length, S := 22, G := 6, PAD := 14
     W := PAD * 2 + cols * (S + G) - G
     Muted(m.AddText("x" PAD " y12 w" (W - 2 * PAD) " h18", "Accent colour"))
-    for i, p in AccentPalette() {
-        sw := m.AddText("x" (PAD + Mod(i - 1, cols) * (S + G)) " y" (38 + (i - 1) // cols * (S + G)) " w" S " h" S " +0xD +0x100", "")
-        sw.GetPos(, , &pw, &ph)
-        sw.px := pw, sw.py := ph, sw.dis := false, sw.col := p[1]
+    pal := AccentPalette()
+    Loop pal.Length {
+        n := A_Index - 1
+        sw := m.AddText("x" (PAD + Mod(n, cols) * (S + G)) " y" (38 + (n // cols) * (S + G)) " w" S " h" S " +0xD +0x100", "")
+        sw.GetPos(, , &sx, &sy)
+        sw.px := sx, sw.py := sy, sw.dis := false, sw.col := pal[A_Index][1]
         sw.drawFn := SwatchDraw
         BTN[sw.Hwnd] := sw                                      ; ring under the mouse
-        sw.OnEvent("Click", Pick.Bind(p[1]))
+        sw.OnEvent("Click", SwatchClick)
         SwatchDraw(sw)
     }
     y := 38 + 3 * (S + G) + 4
@@ -2298,14 +2300,14 @@ AccentPicker(btn, onPick) {
     y += 12
     bw := (W - 2 * PAD - 8) // 2
     isCustom := cfg.accent != "windows" && AccentName() = "Custom"
-    AddBtn(m, "x" PAD " y" y " w" bw, "Windows accent", cfg.accent = "windows").OnEvent("Click", Pick.Bind("windows"))
+    AddBtn(m, "x" PAD " y" y " w" bw, "Windows accent", cfg.accent = "windows").OnEvent("Click", (*) => Pick("windows"))
     AddBtn(m, "x" (PAD + bw + 8) " y" y " w" bw, "Custom colour...", isCustom).OnEvent("Click", Custom)
     H := y + 28 + PAD
     m.OnEvent("Escape", (*) => Close())
     ApplyTheme(m)
     try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", m.Hwnd, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
     rc := Buffer(16)
-    DllCall("GetWindowRect", "ptr", btn.Hwnd, "ptr", rc)
+    DllCall("GetWindowRect", "ptr", anchor.Hwnd, "ptr", rc)
     x := NumGet(rc, 0, "int"), y := NumGet(rc, 12, "int") + Round(4 * k)                  ; under the button
     MonitorGetWorkArea(MonitorFromPt(x, y), &ml, &mt, &mr, &mb)  ; stay on the screen
     if y + Round(H * k) > mb
@@ -2323,7 +2325,10 @@ AccentPicker(btn, onPick) {
         if DllCall("GetForegroundWindow", "ptr") != mh
             Close()
     }
-    Pick(v, *) {
+    SwatchClick(ctrl, *) {
+        Pick(ctrl.col)
+    }
+    Pick(v) {
         Close()
         onPick(v)
     }

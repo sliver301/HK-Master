@@ -2,6 +2,9 @@
 
 ## 2.2.0 (not released yet)
 
+**New**
+- Accent colour picker (Settings > General > Look): Windows' own accent colour, or blue, teal, green, orange, red, pink, purple or graphite. It colours the tabs, buttons, switches, sliders and the chosen theme card, in every look.
+
 **Fixed**
 - Windows 10: light frosted glass was almost clear, so text was hard to read and had light edges around the letters. It is now a frosted light grey, like on Windows 11.
 

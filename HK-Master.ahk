@@ -824,6 +824,12 @@ LoadConfig() {
     c.glass := Rd("General", "Glass", 1) = 1           ; frosted glass background, light or dark (on unless turned off)
     if c.theme = "glass"                               ; a short-lived test build had Glass as a 4th theme
         c.theme := "dark"
+    c.accent := Rd("General", "Accent", "blue")        ; accent colour: a key from ACCENTS(), "windows" = Windows' own
+    known := false
+    for a in ACCENTS()
+        known := known || a[1] = c.accent
+    if !known
+        c.accent := "blue"
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -927,6 +933,7 @@ SaveConfig(c) {
     IniWrite(3, INI, "General", "ConfigVersion")
     IniWrite(c.theme, INI, "General", "Theme")
     IniWrite(c.glass ? 1 : 0, INI, "General", "Glass")
+    IniWrite(c.accent, INI, "General", "Accent")
     try IniDelete(INI, "Snippets")
     IniWrite(c.snippets.Length, INI, "Snippets", "Count")
     for i, s in c.snippets {
@@ -1156,6 +1163,11 @@ ShowSettings(*) {
     themeCards := []
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
+    ; Accent colour: a 3 x 3 grid of round swatches beside the theme cards, as tall as they are,
+    ; with the chosen colour's name under it (on the line of the card names).
+    for i, a in ACCENTS()
+        AccentSwatch(g, 352 + Mod(i - 1, 3) * 29, 88 + (i - 1) // 3 * 29, a[1], PickAccent)
+    accLbl := g.AddText("x334 y172 w116 Center", AccentLabel())
     glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => GlassSupported()
         , "Frosted glass", "Frosted glass (needs a newer Windows 10)", PickGlass)
 
@@ -1379,6 +1391,16 @@ ShowSettings(*) {
         FadeRetheme()
     }
 
+    ; An accent swatch was clicked: same in-place recolour as a theme change.
+    PickAccent(key) {
+        if cfg.accent = key
+            return
+        cfg.accent := key
+        IniWrite(key, INI, "General", "Accent")
+        accLbl.Text := AccentLabel()
+        FadeRetheme()
+    }
+
     ; The frosted-glass switch was flipped: same in-place recolour as a theme change.
     PickGlass(on) {
         cfg.glass := on
@@ -1561,6 +1583,7 @@ ShowSettings(*) {
         c := {snippets: snips, caps: {}, side: {}, fs: {}}
         c.theme := cfg.theme
         c.glass := cfg.glass
+        c.accent := cfg.accent
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
@@ -2118,7 +2141,10 @@ IsDarkTheme() {
     return !light
 }
 
-ThemeColors() {
+; The colours of the current look, with the chosen accent colour (AccentOver) on top.
+ThemeColors() => AccentOver(BaseColors())
+
+BaseColors() {
     ; Light frosted glass. Windows' own controls are made "layered" here (GlassLayer), so they
     ; show as solid pixels instead of being added to the glass: text and check boxes sit on
     ; key, a colour that turns see-through; text boxes and lists are solid white.
@@ -2139,6 +2165,107 @@ ThemeColors() {
     return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
+}
+
+; ---- Accent colour (Settings > General > Look) ----
+; key, name, base colour (RRGGBB, Windows' own accent palette). "windows" follows the accent
+; colour set in Windows (Settings > Personalization > Colors).
+ACCENTS() => [["windows", "Windows", ""], ["blue", "Blue", "0078D4"], ["teal", "Teal", "038387"]
+    , ["green", "Green", "10893E"], ["orange", "Orange", "CA5010"], ["red", "Red", "D13438"]
+    , ["pink", "Pink", "E3008C"], ["purple", "Purple", "8764B8"], ["graphite", "Graphite", "69797E"]]
+
+AccentLabel() {
+    for a in ACCENTS()
+        if a[1] = cfg.accent
+            return "Accent: " a[2]
+    return "Accent"
+}
+
+; The base colour of an accent key, as RRGGBB.
+AccentBase(key) {
+    if key = "windows" {
+        try {
+            c := RegRead("HKCU\Software\Microsoft\Windows\DWM", "AccentColor")     ; 0xAABBGGRR
+            return Format("{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
+        }
+        return "0078D4"                                        ; not set: Windows' default blue
+    }
+    for a in ACCENTS()
+        if a[1] = key
+            return a[3]
+    return "0078D4"
+}
+
+; Two colours mixed: f = 0 gives a, 1 gives b (RRGGBB each).
+MixHex(a, b, f) {
+    a := Integer("0x" a), b := Integer("0x" b), out := 0
+    for s in [16, 8, 0] {
+        ca := (a >> s) & 0xFF, cb := (b >> s) & 0xFF
+        out |= Round(ca + (cb - ca) * f) << s
+    }
+    return Format("{:06X}", out)
+}
+
+; Puts the chosen accent colour into a look's colours. Blue keeps the hand-tuned blues of each
+; look; the others are shades of their base colour, picked the way the blues were:
+; - light looks: a deep shade, readable on white, white text on buttons;
+; - dark glass: a bright shade for lines and text, a deep one for filled buttons (on glass the
+;   colour is added to the dark blur, so a deep fill still reads as that colour);
+; - dark: a light shade, with dark text on buttons.
+AccentOver(t) {
+    if !cfg.HasOwnProp("accent") || cfg.accent = "blue"
+        return t
+    b := AccentBase(cfg.accent)
+    if !t.dark {
+        t.accent := t.pri := MixHex(b, "000000", 0.15)
+        t.priHot := MixHex(t.pri, "FFFFFF", 0.12), t.priText := "FFFFFF"
+        if t.HasOwnProp("priEdge")
+            t.priEdge := MixHex(t.pri, "000000", 0.15)
+    } else if t.HasOwnProp("glass") {
+        t.accent := MixHex(b, "FFFFFF", 0.45)
+        t.pri := MixHex(b, "000000", 0.1), t.priHot := MixHex(t.pri, "FFFFFF", 0.1)
+        t.priEdge := MixHex(t.pri, "FFFFFF", 0.22), t.priText := "F3F4F8"
+    } else {
+        t.accent := t.pri := MixHex(b, "FFFFFF", 0.45)
+        t.priHot := MixHex(t.pri, "FFFFFF", 0.25), t.priText := MixHex(b, "000000", 0.85)
+    }
+    return t
+}
+
+; A round accent swatch (22 x 22): its colour, a ring when chosen (text colour, with a tick)
+; or under the mouse (muted). The Windows one has a small Windows logo.
+AccentSwatch(win, x, y, key, onPick) {
+    pic := win.AddText("x" x " y" y " w22 h22 +0xD +0x100", "")
+    pic.GetPos(, , &pw, &ph)
+    pic.px := pw, pic.py := ph, pic.key := key, pic.dis := false
+    pic.drawFn := AccentSwatchDraw
+    BTN[pic.Hwnd] := pic                                       ; ring under the mouse, like buttons
+    SetTimer(BtnHoverTick, 40)
+    pic.OnEvent("Click", (*) => onPick(key))
+    AccentSwatchDraw(pic)
+    return pic
+}
+
+AccentSwatchDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k, cx := w / 2, cy := h / 2
+    sel := cfg.accent = b.key
+    col := AccentBase(b.key)
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if sel || hot {
+        Gp_Round(cv, 0, 0, w, h, w / 2, sel ? t.fg : t.muted)
+        Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, (w - 5) / 2, col)
+    } else
+        Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, (w - 5) / 2, col)
+    if sel {                                                   ; tick
+        Gp_Line(cv, cx - 4.5, cy + 0.5, cx - 1.5, cy + 3.5, "FFFFFF", 1.8)
+        Gp_Line(cv, cx - 1.5, cy + 3.5, cx + 4.5, cy - 3, "FFFFFF", 1.8)
+    } else if b.key = "windows" {                              ; Windows logo: four small squares
+        for q in [[-4.5, -4.5], [0.5, -4.5], [-4.5, 0.5], [0.5, 0.5]]
+            Gp_Round(cv, cx + q[1], cy + q[2], 4, 4, 0.5, "FFFFFF")
+    }
+    SetBitmap(b, Gp_Done(cv))
 }
 
 ; Frosted glass (Settings > General > Look, on by default), dark or light. On glass every

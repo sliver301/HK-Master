@@ -113,6 +113,8 @@ global TB_H := 32                   ; its height (96-dpi units)
 OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
 OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
+global CHECKS := Map()              ; check boxes we draw ourselves in the accent colour (hwnd -> 1), see CheckDraw
+OnMessage(0x4E, CheckDraw)          ; WM_NOTIFY: NM_CUSTOMDRAW from those check boxes
 global LAYERED := Map()             ; light glass: controls made layered (hwnd -> 1), see GlassLayer
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
@@ -2377,6 +2379,7 @@ ApplyTheme(win) {
           ; Light glass: text-like controls on the see-through key colour, boxes solid.
           ; Our drawn pictures (SS_OWNERDRAW) stay as they are: their pixels carry their own alpha.
           pic := ctrl.Type = "Text" && (DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x1F) = 0xD
+          pic := pic || CHECKS.Has(hwnd)                ; our drawn check boxes are pictures too
           if !pic {
               switch ctrl.Type {
                 case "Text", "Pic", "Checkbox", "Radio", "Slider":
@@ -2710,6 +2713,60 @@ PicDrawItem(wParam, lParam, msg, hwnd) {
     DllCall("SelectObject", "ptr", mdc, "ptr", old)
     DllCall("DeleteDC", "ptr", mdc)
     return 1
+}
+
+; Our check boxes (AddCheck): Windows still runs them (click, keyboard, .Value), but we paint
+; them, so the tick box takes the accent colour like the switches. NM_CUSTOMDRAW, before Windows
+; paints: window colour, then our picture blended on top (as PicDrawItem), and tell Windows to
+; skip its own drawing (CDRF_SKIPDEFAULT).
+CheckDraw(wParam, lParam, msg, hwnd) {
+    P := A_PtrSize
+    if NumGet(lParam, 2 * P, "int") != -12                     ; NM_CUSTOMDRAW
+        return
+    h := NumGet(lParam, 0, "ptr")
+    if !CHECKS.Has(h) || NumGet(lParam, 3 * P, "uint") != 1    ; only ours, at CDDS_PREPAINT
+        return
+    hdc := NumGet(lParam, 4 * P, "ptr")
+    rc := lParam + 5 * P
+    state := NumGet(lParam, 6 * P + 16, "uint")                ; uItemState
+    w := NumGet(rc, 8, "int") - NumGet(rc, 0, "int"), hh := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+    on := SendMessage(0xF0, 0, 0, h) = 1                       ; BM_GETCHECK
+    dis := (state & 4) || !DllCall("IsWindowEnabled", "ptr", h)
+    bmp := CheckBitmap(w, hh, on, state & 0x40, dis)          ; 0x40 = CDIS_HOT
+    t := ThemeColors()
+    c := Integer("0x" t.bg)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    old := DllCall("SelectObject", "ptr", mdc, "ptr", bmp, "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", hdc, "int", NumGet(rc, 0, "int"), "int", NumGet(rc, 4, "int"), "int", w, "int", hh
+        , "ptr", mdc, "int", 0, "int", 0, "int", w, "int", hh, "uint", 0x01FF0000)   ; AC_SRC_ALPHA, opacity 255
+    DllCall("SelectObject", "ptr", mdc, "ptr", old)
+    DllCall("DeleteDC", "ptr", mdc)
+    DllCall("DeleteObject", "ptr", bmp)
+    return 4                                                    ; CDRF_SKIPDEFAULT
+}
+
+; A rounded tick box: ticked = accent fill with a tick, not ticked = outlined box (text colour
+; under the mouse), greyed out = line colour.
+CheckBitmap(pw, ph, on, hot, dis) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := pw / k, h := ph / k
+    sz := Min(w, h), x := (w - sz) / 2, y := (h - sz) / 2
+    cv := Gp_Canvas(pw, ph, t.bg, true)
+    if on {
+        Gp_Round(cv, x, y, sz, sz, 4, dis ? t.line : (hot ? t.priHot : t.pri))
+        tc := dis ? t.muted : t.priText
+        Gp_Line(cv, x + sz * 0.24, y + sz * 0.52, x + sz * 0.42, y + sz * 0.70, tc, 1.7)
+        Gp_Line(cv, x + sz * 0.42, y + sz * 0.70, x + sz * 0.76, y + sz * 0.32, tc, 1.7)
+    } else {
+        bw := Round(cv.k) / cv.k                                ; outline = whole pixels
+        Gp_Round(cv, x, y, sz, sz, 4, dis ? t.line : (hot ? t.fg : t.muted))
+        Gp_Round(cv, x + bw, y + bw, sz - 2 * bw, sz - 2 * bw, 4 - bw, t.field)
+    }
+    return Gp_Done(cv)
 }
 
 BtnBitmap(pw, ph, text, hot, dis, primary, chevron := false) {
@@ -3606,6 +3663,7 @@ SecHeader(win, opts, text) {
 ; colour (black text on a dark window). Clicking the label toggles the box.
 AddCheck(win, x, y, checked, label, w := 400, onChange := 0) {
     cb := win.AddCheckbox("x" x " y" (y + 1) " w16 h16 Checked" (checked ? 1 : 0))
+    CHECKS[cb.Hwnd] := 1                                ; drawn by us (CheckDraw), in the accent colour
     lbl := win.AddText("x" (x + 22) " y" y " w" w, label)
     lbl.OnEvent("Click", (*) => (cb.Value := !cb.Value, onChange ? onChange() : 0))
     if onChange

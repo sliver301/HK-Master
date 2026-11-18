@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.1.9
+;@Ahk2Exe-SetVersion 2.2.0
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.1.9"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.2.0"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -113,6 +113,8 @@ global TB_H := 32                   ; its height (96-dpi units)
 OnMessage(0x83, TitledNcCalc)       ; WM_NCCALCSIZE: no Windows frame on those windows
 OnMessage(0x84, TitledHitTest)      ; WM_NCHITTEST: our title bar drags, the edges resize
 global GLASS_WINS := Map()          ; windows that have the frosted-glass backdrop on (hwnd -> 1)
+global CHECKS := Map()              ; check boxes we draw ourselves in the accent colour (hwnd -> 1), see CheckDraw
+OnMessage(0x4E, CheckDraw)          ; WM_NOTIFY: NM_CUSTOMDRAW from those check boxes
 global LAYERED := Map()             ; light glass: controls made layered (hwnd -> 1), see GlassLayer
 global APPDLGS := Map()             ; open AppDialog windows (hwnd -> Gui), recoloured on a theme switch
 ; Debug (set in the .ini under [General]): Debug=1 writes fastscroll-log.txt,
@@ -824,6 +826,11 @@ LoadConfig() {
     c.glass := Rd("General", "Glass", 1) = 1           ; frosted glass background, light or dark (on unless turned off)
     if c.theme = "glass"                               ; a short-lived test build had Glass as a 4th theme
         c.theme := "dark"
+    c.accent := StrUpper(Rd("General", "Accent", "0090FF"))   ; accent colour: RRGGBB, or "windows" = Windows' own
+    if c.accent = "WINDOWS"
+        c.accent := "windows"
+    else if !RegExMatch(c.accent, "^[0-9A-F]{6}$")             ; (also the colour names of a 2.2.0 test build)
+        c.accent := "0090FF"
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -927,6 +934,7 @@ SaveConfig(c) {
     IniWrite(3, INI, "General", "ConfigVersion")
     IniWrite(c.theme, INI, "General", "Theme")
     IniWrite(c.glass ? 1 : 0, INI, "General", "Glass")
+    IniWrite(c.accent, INI, "General", "Accent")
     try IniDelete(INI, "Snippets")
     IniWrite(c.snippets.Length, INI, "Snippets", "Count")
     for i, s in c.snippets {
@@ -1157,7 +1165,12 @@ ShowSettings(*) {
     for i, tc in [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]
         themeCards.Push(ThemeCard(g, 20 + (i - 1) * 108, 88, tc[1], tc[2], PickTheme))
     glassSw := ToggleSwitch(g, 20, 198, () => cfg.glass, () => GlassSupported()
-        , "Frosted glass", "Frosted glass (needs a newer Windows 10)", PickGlass)
+        , "Frosted glass", "Frosted glass (needs newer Windows)", PickGlass)
+    glassSw.lbl.Move(, , 200)                            ; room for the accent colour on the same line
+    ; Accent colour, at the end of the Frosted glass line: a button with the colour and its name
+    ; that opens the swatch picker (AccentPicker).
+    Muted(g.AddText("x226 y200 w58 Right", "Accent"))
+    AccentButton(g, 292, 194, 128, PickAccent)
 
     SecHeader(g, "x20 y232 w400", "Startup")
     startEn := AddCheck(g, 20, 262, InstalledHere() ? (u.HasOwnProp("start") ? u.start : StartupOn()) : false
@@ -1379,6 +1392,15 @@ ShowSettings(*) {
         FadeRetheme()
     }
 
+    ; An accent colour was picked: same in-place recolour as a theme change.
+    PickAccent(v) {
+        if cfg.accent = v
+            return
+        cfg.accent := v
+        IniWrite(v, INI, "General", "Accent")
+        FadeRetheme()
+    }
+
     ; The frosted-glass switch was flipped: same in-place recolour as a theme change.
     PickGlass(on) {
         cfg.glass := on
@@ -1561,6 +1583,7 @@ ShowSettings(*) {
         c := {snippets: snips, caps: {}, side: {}, fs: {}}
         c.theme := cfg.theme
         c.glass := cfg.glass
+        c.accent := cfg.accent
         c.start := startEn.Value
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
@@ -2118,7 +2141,10 @@ IsDarkTheme() {
     return !light
 }
 
-ThemeColors() {
+; The colours of the current look, with the chosen accent colour (AccentOver) on top.
+ThemeColors() => AccentOver(BaseColors())
+
+BaseColors() {
     ; Light frosted glass. Windows' own controls are made "layered" here (GlassLayer), so they
     ; show as solid pixels instead of being added to the glass: text and check boxes sit on
     ; key, a colour that turns see-through; text boxes and lists are solid white.
@@ -2139,6 +2165,230 @@ ThemeColors() {
     return IsDarkTheme()
         ? {dark: true,  bg: "202020", fg: "E8E8E8", muted: "A0A0A0", field: "2B2B2B", line: "3C3C3C", btn: "3A3A3A", btnHot: "505050", accent: "4CC2FF", pri: "4CC2FF", priHot: "7AD3FF", priText: "00131F"}
         : {dark: false, bg: "F9F9F9", fg: "1B1B1B", muted: "6B6B6B", field: "FFFFFF", line: "D5D5D5", btn: "E3E3E3", btnHot: "CFCFCF", accent: "0067C0", pri: "0067C0", priHot: "1A7FD0", priText: "FFFFFF"}
+}
+
+; ---- Accent colour (Settings > General > Look) ----
+; One colour for everything that shows the accent: tabs, buttons, switches, check boxes, sliders,
+; the chosen theme card. cfg.accent is RRGGBB, or "windows" = the accent colour set in Windows
+; (Settings > Personalization > Colors).
+
+; The picker's colours: 11 hues (the solid colours of the Radix palette, made to work on light
+; and dark backgrounds) in three rows: light, as is, deep.
+ACCENT_HUES() => [["Red", "E5484D"], ["Orange", "F76B15"], ["Amber", "FFC53D"], ["Green", "30A46C"]
+    , ["Teal", "12A594"], ["Cyan", "00A2C7"], ["Blue", "0090FF"], ["Indigo", "3E63DD"]
+    , ["Violet", "6E56CF"], ["Pink", "D6409F"], ["Grey", "8B8D98"]]
+
+AccentPalette() {                                              ; [[RRGGBB, name], ...] row by row
+    static pal := 0
+    if pal
+        return pal
+    pal := []
+    for tone in [["Light ", "FFFFFF", 0.35], ["", "", 0], ["Deep ", "000000", 0.3]]
+        for hu in ACCENT_HUES()
+            pal.Push([tone[3] ? MixHex(hu[2], tone[2], tone[3]) : hu[2], tone[1] = "" ? hu[1] : (tone[1] StrLower(hu[1]))])
+    return pal
+}
+
+; The accent colour now in use, as RRGGBB.
+AccentHex() {
+    a := cfg.HasOwnProp("accent") ? cfg.accent : "0090FF"
+    if a != "windows"
+        return a
+    try {
+        c := RegRead("HKCU\Software\Microsoft\Windows\DWM", "AccentColor")     ; 0xAABBGGRR
+        return Format("{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
+    }
+    return "0078D4"                                            ; not set: Windows' default blue
+}
+
+AccentName() {
+    if cfg.accent = "windows"
+        return "Windows"
+    for p in AccentPalette()
+        if p[1] = cfg.accent
+            return p[2]
+    return "Custom"
+}
+
+; Two colours mixed: f = 0 gives a, 1 gives b (RRGGBB each).
+MixHex(a, b, f) {
+    a := Integer("0x" a), b := Integer("0x" b), out := 0
+    for s in [16, 8, 0] {
+        ca := (a >> s) & 0xFF, cb := (b >> s) & 0xFF
+        out |= Round(ca + (cb - ca) * f) << s
+    }
+    return Format("{:06X}", out)
+}
+
+; How light a colour looks, 0 (black) to 1 (white).
+Luma(hex) {
+    v := Integer("0x" hex)
+    return (0.2126 * ((v >> 16) & 0xFF) + 0.7152 * ((v >> 8) & 0xFF) + 0.0722 * (v & 0xFF)) / 255
+}
+
+; Puts the accent colour into a look's colours: the same colour for lines, text and filled
+; buttons, in every look. Text on it is dark for light colours (amber, light tones), else white.
+AccentOver(t) {
+    c := AccentHex()
+    light := Luma(c) > 0.6
+    t.accent := t.pri := c
+    t.priText := light ? "1B1B1B" : "FFFFFF"
+    t.priHot := light ? MixHex(c, "000000", 0.08) : MixHex(c, "FFFFFF", 0.14)
+    if t.HasOwnProp("priEdge")                                 ; glass: the outline of filled buttons
+        t.priEdge := MixHex(c, t.dark ? "FFFFFF" : "000000", 0.22)
+    return t
+}
+
+; The accent button (General page): like a drop-down, the colour as a dot, its name and a ˅.
+AccentButton(win, x, y, w, onPick) {
+    b := win.AddText("x" x " y" y " w" w " h28 +0xD +0x100", "")
+    b.GetPos(, , &pw, &ph)
+    b.px := pw, b.py := ph, b.dis := false
+    b.drawFn := AccentButtonDraw
+    BTN[b.Hwnd] := b                                           ; lighter under the mouse
+    SetTimer(BtnHoverTick, 40)
+    b.OnEvent("Click", (*) => AccentPicker(b, onPick))
+    AccentButtonDraw(b)
+    return b
+}
+
+AccentButtonDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k
+    fill := hot ? t.btnHot : t.btn
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if t.HasOwnProp("glass") {                                 ; glass: a 1-pixel outline, like the buttons
+        bw := Round(cv.k) / cv.k
+        Gp_Round(cv, 0, 0, w, h, 8, t.edge)
+        Gp_Round(cv, bw, bw, w - 2 * bw, h - 2 * bw, 8 - bw, fill)
+    } else
+        Gp_Round(cv, 0, 0, w, h, 8, fill)
+    Gp_Round(cv, 10, h / 2 - 7, 14, 14, 7, t.line)              ; a thin ring, so any colour shows
+    Gp_Round(cv, 11, h / 2 - 6, 12, 12, 6, AccentHex())
+    Gp_Text(cv, AccentName(), 32, 0, w - 58, h, t.fg, 12, false, 0, 5)
+    Gp_Line(cv, w - 22, h / 2 - 2, w - 18, h / 2 + 2, t.fg, 1.5)
+    Gp_Line(cv, w - 18, h / 2 + 2, w - 14, h / 2 - 2, t.fg, 1.5)
+    SetBitmap(b, Gp_Done(cv))
+}
+
+; The swatch picker: a pop-up under the accent button (like our menus) with the palette, then
+; "Windows accent" and "Custom colour..." (Windows' colour dialog, any colour).
+AccentPicker(anchor, onPick) {   ; (not "btn": names ignore case, and BTN is our buttons map)
+    k := A_ScreenDPI / 96
+    owner := DllCall("GetAncestor", "ptr", anchor.Hwnd, "uint", 2, "ptr")       ; GA_ROOT
+    m := Gui("-Caption +ToolWindow +AlwaysOnTop +Owner" owner (VerCompare(A_OSVersion, "10.0.22000") < 0 ? " +Border" : ""))
+    m.MarginX := 0, m.MarginY := 0
+    mh := m.Hwnd                                                ; kept: m.Hwnd can't be read once it's closed
+    POPUPS[mh] := 1
+    cols := ACCENT_HUES().Length, S := 22, G := 6, PAD := 14
+    W := PAD * 2 + cols * (S + G) - G
+    Muted(m.AddText("x" PAD " y12 w" (W - 2 * PAD) " h18", "Accent colour"))
+    pal := AccentPalette()
+    Loop pal.Length {
+        n := A_Index - 1
+        sw := m.AddText("x" (PAD + Mod(n, cols) * (S + G)) " y" (38 + (n // cols) * (S + G)) " w" S " h" S " +0xD +0x100", "")
+        sw.GetPos(, , &sx, &sy)
+        sw.px := sx, sw.py := sy, sw.dis := false, sw.col := pal[A_Index][1]
+        sw.drawFn := SwatchDraw
+        BTN[sw.Hwnd] := sw                                      ; ring under the mouse
+        sw.OnEvent("Click", SwatchClick)
+        SwatchDraw(sw)
+    }
+    y := 38 + 3 * (S + G) + 4
+    sp := m.AddText("x" PAD " y" y " w" (W - 2 * PAD) " h1"), sp.role := "line"
+    y += 12
+    bw := (W - 2 * PAD - 8) // 2
+    isCustom := cfg.accent != "windows" && AccentName() = "Custom"
+    AddBtn(m, "x" PAD " y" y " w" bw, "Windows accent", cfg.accent = "windows").OnEvent("Click", (*) => Pick("windows"))
+    AddBtn(m, "x" (PAD + bw + 8) " y" y " w" bw, "Custom colour...", isCustom).OnEvent("Click", Custom)
+    H := y + 28 + PAD
+    m.OnEvent("Escape", (*) => Close())
+    ApplyTheme(m)
+    try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", m.Hwnd, "int", 33, "int*", 2, "int", 4)   ; Windows 11: round corners
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", anchor.Hwnd, "ptr", rc)
+    x := NumGet(rc, 0, "int"), y := NumGet(rc, 12, "int") + Round(4 * k)                  ; under the button
+    MonitorGetWorkArea(MonitorFromPt(x, y), &ml, &mt, &mr, &mb)  ; stay on the screen
+    if y + Round(H * k) > mb
+        y := NumGet(rc, 4, "int") - Round((H + 4) * k)          ; no room below: above it
+    x := Max(ml, Min(x, mr - Round(W * k))), y := Max(mt, y)
+    m.Show("x" x " y" y " w" W " h" H)
+    SetTimer(BtnHoverTick, 40)
+    SetTimer(Watch, 60)
+
+    Watch() {                                                   ; another window took over: close
+        if !DllCall("IsWindow", "ptr", mh) {
+            SetTimer(Watch, 0)
+            return
+        }
+        if DllCall("GetForegroundWindow", "ptr") != mh
+            Close()
+    }
+    SwatchClick(ctrl, *) {
+        Pick(ctrl.col)
+    }
+    Pick(v) {
+        Close()
+        onPick(v)
+    }
+    Custom(*) {
+        Close()
+        c := PickCustomColour(owner)
+        if c != ""
+            onPick(c)
+    }
+    Close() {                                                   ; forget its controls, then close
+        SetTimer(Watch, 0)
+        if !DllCall("IsWindow", "ptr", mh)
+            return
+        for hw, c in m
+            try BTN.Delete(hw)
+        try POPUPS.Delete(mh)
+        try m.Destroy()
+    }
+}
+
+; One round swatch of the picker: a ring in the text colour (with a tick) when it is the colour
+; in use, a muted ring under the mouse.
+SwatchDraw(b, hot := false) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := b.px / k, h := b.py / k, cx := w / 2, cy := h / 2
+    sel := cfg.accent = b.col
+    cv := Gp_Canvas(b.px, b.py, t.bg, true)
+    if sel || hot
+        Gp_Round(cv, 0, 0, w, h, w / 2, sel ? t.fg : t.muted)
+    Gp_Round(cv, 2.5, 2.5, w - 5, h - 5, (w - 5) / 2, b.col)
+    if sel {
+        tc := Luma(b.col) > 0.6 ? "1B1B1B" : "FFFFFF"
+        Gp_Line(cv, cx - 4.5, cy + 0.5, cx - 1.5, cy + 3.5, tc, 1.8)
+        Gp_Line(cv, cx - 1.5, cy + 3.5, cx + 4.5, cy - 3, tc, 1.8)
+    }
+    SetBitmap(b, Gp_Done(cv))
+}
+
+; Windows' colour dialog, opened on the accent colour now in use. Returns RRGGBB, or "" if
+; cancelled. The 16 "custom colours" boxes are kept while the app runs.
+PickCustomColour(owner) {
+    static cust := 0
+    if !cust {
+        cust := Buffer(64)
+        Loop 16
+            NumPut("uint", 0xFFFFFF, cust, (A_Index - 1) * 4)
+    }
+    P := A_PtrSize
+    cc := Buffer(9 * P, 0)                                      ; CHOOSECOLOR
+    NumPut("uint", 9 * P, cc, 0)
+    NumPut("ptr", owner, cc, P)
+    cur := Integer("0x" AccentHex())
+    NumPut("uint", ((cur & 0xFF) << 16) | (cur & 0xFF00) | (cur >> 16), cc, 3 * P)   ; COLORREF 0x00BBGGRR
+    NumPut("ptr", cust.Ptr, cc, 4 * P)
+    NumPut("uint", 0x103, cc, 5 * P)                            ; CC_RGBINIT | CC_FULLOPEN | CC_ANYCOLOR
+    if !DllCall("comdlg32\ChooseColorW", "ptr", cc)
+        return ""
+    c := NumGet(cc, 3 * P, "uint")
+    return Format("{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
 }
 
 ; Frosted glass (Settings > General > Look, on by default), dark or light. On glass every
@@ -2164,7 +2414,7 @@ SetGlass(win, on) {
     ; 2026-11-17; acrylic keeps a milky layer of its own, so light uses almost no tint.)
     NumPut("int", on ? (VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3) : 0, ap, 0)
     NumPut("int", on ? 2 : 0, ap, 4)
-    NumPut("uint", on ? (IsDarkTheme() ? 0xD8140F0C : 0x10F3F3F3) : 0, ap, 8)   ; tint AABBGGRR: dark / light
+    NumPut("uint", on ? GlassTint() : 0, ap, 8)                                     ; tint AABBGGRR
     wd := Buffer(A_PtrSize * 3, 0)
     NumPut("int", 19, wd, 0)
     NumPut("ptr", ap.Ptr, wd, A_PtrSize)
@@ -2192,7 +2442,17 @@ GlassMoveStart(wParam, lParam, msg, hwnd) {
 GlassMoveEnd(wParam, lParam, msg, hwnd) {
     if !GLASS_WINS.Has(hwnd) || IsDarkTheme()
         return
-    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, 0x10F3F3F3)
+    SetAccent(hwnd, VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 4 : 3, 2, GlassTint())
+}
+
+; The glass tint (AABBGGRR). Dark: a blue-black at 85%. Light on Windows 11: almost none, as
+; acrylic brings a milky layer of its own. Light on Windows 10: its plain blur has no such layer,
+; so the same tint left the glass nearly clear (dark wallpaper behind dark text, with light
+; fringes around the letters); a 75% light grey stands in for the acrylic layer.
+GlassTint() {
+    if IsDarkTheme()
+        return 0xD8140F0C
+    return VerCompare(A_OSVersion, "10.0.22000") >= 0 ? 0x10F3F3F3 : 0xC0F3F3F3
 }
 
 SetAccent(h, state, flags, tint) {
@@ -2240,6 +2500,7 @@ ApplyTheme(win) {
           ; Light glass: text-like controls on the see-through key colour, boxes solid.
           ; Our drawn pictures (SS_OWNERDRAW) stay as they are: their pixels carry their own alpha.
           pic := ctrl.Type = "Text" && (DllCall("GetWindowLong", "ptr", hwnd, "int", -16, "int") & 0x1F) = 0xD
+          pic := pic || CHECKS.Has(hwnd)                ; our drawn check boxes are pictures too
           if !pic {
               switch ctrl.Type {
                 case "Text", "Pic", "Checkbox", "Radio", "Slider":
@@ -2573,6 +2834,60 @@ PicDrawItem(wParam, lParam, msg, hwnd) {
     DllCall("SelectObject", "ptr", mdc, "ptr", old)
     DllCall("DeleteDC", "ptr", mdc)
     return 1
+}
+
+; Our check boxes (AddCheck): Windows still runs them (click, keyboard, .Value), but we paint
+; them, so the tick box takes the accent colour like the switches. NM_CUSTOMDRAW, before Windows
+; paints: window colour, then our picture blended on top (as PicDrawItem), and tell Windows to
+; skip its own drawing (CDRF_SKIPDEFAULT).
+CheckDraw(wParam, lParam, msg, hwnd) {
+    P := A_PtrSize
+    if NumGet(lParam, 2 * P, "int") != -12                     ; NM_CUSTOMDRAW
+        return
+    h := NumGet(lParam, 0, "ptr")
+    if !CHECKS.Has(h) || NumGet(lParam, 3 * P, "uint") != 1    ; only ours, at CDDS_PREPAINT
+        return
+    hdc := NumGet(lParam, 4 * P, "ptr")
+    rc := lParam + 5 * P
+    state := NumGet(lParam, 6 * P + 16, "uint")                ; uItemState
+    w := NumGet(rc, 8, "int") - NumGet(rc, 0, "int"), hh := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+    on := SendMessage(0xF0, 0, 0, h) = 1                       ; BM_GETCHECK
+    dis := (state & 4) || !DllCall("IsWindowEnabled", "ptr", h)
+    bmp := CheckBitmap(w, hh, on, state & 0x40, dis)          ; 0x40 = CDIS_HOT
+    t := ThemeColors()
+    c := Integer("0x" t.bg)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    old := DllCall("SelectObject", "ptr", mdc, "ptr", bmp, "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", hdc, "int", NumGet(rc, 0, "int"), "int", NumGet(rc, 4, "int"), "int", w, "int", hh
+        , "ptr", mdc, "int", 0, "int", 0, "int", w, "int", hh, "uint", 0x01FF0000)   ; AC_SRC_ALPHA, opacity 255
+    DllCall("SelectObject", "ptr", mdc, "ptr", old)
+    DllCall("DeleteDC", "ptr", mdc)
+    DllCall("DeleteObject", "ptr", bmp)
+    return 4                                                    ; CDRF_SKIPDEFAULT
+}
+
+; A rounded tick box: ticked = accent fill with a tick, not ticked = outlined box (text colour
+; under the mouse), greyed out = line colour.
+CheckBitmap(pw, ph, on, hot, dis) {
+    t := ThemeColors()
+    k := A_ScreenDPI / 96
+    w := pw / k, h := ph / k
+    sz := Min(w, h), x := (w - sz) / 2, y := (h - sz) / 2
+    cv := Gp_Canvas(pw, ph, t.bg, true)
+    if on {
+        Gp_Round(cv, x, y, sz, sz, 4, dis ? t.line : (hot ? t.priHot : t.pri))
+        tc := dis ? t.muted : t.priText
+        Gp_Line(cv, x + sz * 0.24, y + sz * 0.52, x + sz * 0.42, y + sz * 0.70, tc, 1.7)
+        Gp_Line(cv, x + sz * 0.42, y + sz * 0.70, x + sz * 0.76, y + sz * 0.32, tc, 1.7)
+    } else {
+        bw := Round(cv.k) / cv.k                                ; outline = whole pixels
+        Gp_Round(cv, x, y, sz, sz, 4, dis ? t.line : (hot ? t.fg : t.muted))
+        Gp_Round(cv, x + bw, y + bw, sz - 2 * bw, sz - 2 * bw, 4 - bw, t.field)
+    }
+    return Gp_Done(cv)
 }
 
 BtnBitmap(pw, ph, text, hot, dis, primary, chevron := false) {
@@ -3469,6 +3784,7 @@ SecHeader(win, opts, text) {
 ; colour (black text on a dark window). Clicking the label toggles the box.
 AddCheck(win, x, y, checked, label, w := 400, onChange := 0) {
     cb := win.AddCheckbox("x" x " y" (y + 1) " w16 h16 Checked" (checked ? 1 : 0))
+    CHECKS[cb.Hwnd] := 1                                ; drawn by us (CheckDraw), in the accent colour
     lbl := win.AddText("x" (x + 22) " y" y " w" w, label)
     lbl.OnEvent("Click", (*) => (cb.Value := !cb.Value, onChange ? onChange() : 0))
     if onChange

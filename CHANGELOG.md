@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.2.0 (not released yet)
+## 2.2.0
 
 **New**
 - Accent colour (Settings > General > Look, next to Frosted glass): a colour button opens a swatch picker with 33 colours (11 hues in light, normal and deep), Windows' own accent colour, or any colour from Windows' colour dialog. The one colour is used for the tabs, buttons, switches, check boxes, sliders and the chosen theme card, in every look. Check boxes are now rounded, in the same style as the switches.

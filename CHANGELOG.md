@@ -6,7 +6,7 @@
 - Media Control: more keys to hold, now Left Alt, Left Ctrl, Insert and Pause as well as Caps Lock, Right Alt, Right Ctrl, the Menu key and Scroll Lock. Alt and Ctrl keep working as usual (Alt + Tab, Ctrl + C...); only their combinations with the mouse buttons you set are taken.
 
 **Changed**
-- Mouse & keys: the Media Control boxes now reach the right edge of the page, and their menus open below the box instead of beside it.
+- Mouse & keys: the Media Control boxes now reach the right edge of the page and move with it when the window is made wider, with a thin line joining each label to its box. Their menus open below the box instead of beside it.
 - Fast scroll: the speed sliders fill the row, with the numbers and Reset at the right edge. The sliders get longer when the window is made wider.
 
 ## 2.2.0

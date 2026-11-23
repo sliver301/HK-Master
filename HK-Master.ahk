@@ -1098,11 +1098,12 @@ ShowSettings(*) {
     Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
     pSideScroll := PanelSince(g, mk)
 
-    ; Media Control on the right, out to the page's right edge (its menus open below the boxes).
+    ; Media Control on the right. Its boxes sit at the page's right edge and follow it when the
+    ; window is made wider; a thin line joins each label to its box (its menus open below the boxes).
     mk := PanelMark(g)
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
-    g.AddText("x345 y88 w110", "Hold")
+    holdLbl := g.AddText("x345 y88", "Hold")
     trigNames := []
     for t in TRIGGERS()
         trigNames.Push(t[2])
@@ -1110,13 +1111,16 @@ ShowSettings(*) {
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
             trigSel := i
-    trigDd := DropBtn(g, "x460 y82 w370", trigNames, trigSel)
+    trigDd := Anchor(DropBtn(g, "x460 y82 w370", trigNames, trigSel), "x")
+    LeaderLine(g, holdLbl, 460)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
         y := 116 + (i - 1) * 32
-        g.AddText("x345 y" (y + 4) " w110", row[2])
-        capsEd[row[1]] := KeyBox(g, "x460 y" y " w342", u.caps.%row[1]%, true)   ; × ends at 830
+        rowLbl := g.AddText("x345 y" (y + 4), row[2])
+        kb := capsEd[row[1]] := KeyBox(g, "x460 y" y " w342", u.caps.%row[1]%, true)   ; × ends at 830
+        Anchor(kb, "x"), Anchor(kb.clr, "x")
+        LeaderLine(g, rowLbl, 460)
     }
     pMedia := PanelSince(g, mk)
 
@@ -2646,6 +2650,17 @@ RepaintLayered(winHwnd) {
         if DllCall("GetAncestor", "ptr", h, "uint", 2, "ptr") = root && DllCall("IsWindowVisible", "ptr", h)
             DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
     }
+}
+
+; A thin line from the end of a label's text to the box it belongs to (x2: the box's left edge,
+; 96-dpi units). It grows as the box moves right when the window is made wider.
+LeaderLine(win, lbl, x2) {
+    k := A_ScreenDPI / 96
+    lbl.GetPos(&lx, &ly, &lw, &lh)
+    x1 := Round((lx + lw) / k) + 8, y := Round((ly + lh / 2) / k)
+    ln := Anchor(win.AddText("x" x1 " y" y " w" Max(1, x2 - 8 - x1) " h1"), "w")
+    ln.role := "line"
+    return ln
 }
 
 ; Remember a control's start position and how it follows a window resize
@@ -4444,7 +4459,8 @@ KeyBox(owner, opts, value, withMenu := false) {
     b := AddBtn(owner, opts, PrettyKeys(value))
     KEYBOX_VALUES[b.Hwnd] := value
     b.OnEvent("Click", withMenu ? KeyBoxMenu : RecordKeys)
-    AddBtn(owner, "x+2 yp w26", "×").OnEvent("Click", (*) => SetKeyBox(b, ""))
+    b.clr := AddBtn(owner, "x+2 yp w26", "×")
+    b.clr.OnEvent("Click", (*) => SetKeyBox(b, ""))
     return b
 }
 

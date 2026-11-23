@@ -4,7 +4,6 @@
 
 **New**
 - Media Control: more keys to hold, now Left Alt, Left Ctrl, Insert and Pause as well as Caps Lock, Right Alt, Right Ctrl, the Menu key and Scroll Lock. Alt and Ctrl keep working as usual (Alt + Tab, Ctrl + C...); only their combinations with the mouse buttons you set are taken.
-
 - A little surprise on the General page, for those who make the window really wide.
 
 **Changed**

@@ -1159,12 +1159,14 @@ ShowSettings(*) {
     fsReset := Anchor(AddBtn(g, "x740 y96 w90", "Reset"), "x")   ; back to the default speeds
     fsReset.OnEvent("Click", (*) => (SetSlide(fsBoost, 30), SetSlide(fsMax, 400), SetSlide(fsHeld, 60), SetSlide(fsRel, 3)))
     SecHeader(g, "x20 y288 w400", "Excluded apps")
-    exLv := NewList(g, "x20 y318 w470 h210", ["App"], "h")
-    aBtn1 := AddBtn(g, "x506 y318 w130", "Add app...")
-    aBtn2 := AddBtn(g, "x506 y354 w130", "Remove")
+    ; The list takes the extra width when the window is made wider; the buttons and notes keep
+    ; their size and stay at the right edge.
+    exLv := NewList(g, "x20 y318 w470 h210", ["App"], "wh")
+    aBtn1 := Anchor(AddBtn(g, "x506 y318 w130", "Add app..."), "x")
+    aBtn2 := Anchor(AddBtn(g, "x506 y354 w130", "Remove"), "x")
     aBtn1.OnEvent("Click", (*) => ChooseApp(g, AddExclude)), aBtn2.OnEvent("Click", (*) => DelExclude())
-    Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps."))
-    Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically."))
+    Anchor(Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps.")), "x")
+    Anchor(Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically.")), "x")
     RefreshEx()
     pFast := PanelSince(g, mk)
     EndPage(4)
@@ -1271,7 +1273,8 @@ ShowSettings(*) {
                 continue
             DllCall("SetWindowPos", "ptr", hw, "ptr", 0
                 , "int", Round((a.x + (InStr(a.f, "x") ? dw : 0)) * k), "int", Round((a.y + (InStr(a.f, "y") ? dh : 0)) * k)
-                , "int", Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k), "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
+                , "int", InStr(a.f, "g") && dw <= 0 ? 0 : Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k)   ; g: only once wider
+                , "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
         PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
@@ -2653,18 +2656,19 @@ RepaintLayered(winHwnd) {
 }
 
 ; A thin line from the end of a label's text to the box it belongs to (x2: the box's left edge,
-; 96-dpi units). It grows as the box moves right when the window is made wider.
+; 96-dpi units). Only shown once the window is made wider than its original size ("g": no width
+; until then); it grows as the box moves right.
 LeaderLine(win, lbl, x2) {
     k := A_ScreenDPI / 96
     lbl.GetPos(&lx, &ly, &lw, &lh)
     x1 := Round((lx + lw) / k) + 8, y := Round((ly + lh / 2) / k)
-    ln := Anchor(win.AddText("x" x1 " y" y " w" Max(1, x2 - 8 - x1) " h1"), "w")
+    ln := Anchor(win.AddText("x" x1 " y" y " w" Max(1, x2 - 8 - x1) " h1"), "wg")
     ln.role := "line"
     return ln
 }
 
 ; Remember a control's start position and how it follows a window resize
-; (flags: x / y = move, w / h = grow).
+; (flags: x / y = move, w / h = grow, g = no width until the window is wider than at the start).
 Anchor(ctrl, flags) {
     ctrl.GetPos(&x, &y, &w, &h)
     k := A_ScreenDPI / 96

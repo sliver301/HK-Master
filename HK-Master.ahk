@@ -135,6 +135,7 @@ global PENDING := 0          ; settings kept while the window is rebuilt for a n
 global REOPEN := 0           ; page / position / size to restore after that
 global BASE_SIG := ""        ; settings window: the saved settings, to tell when something changed
 global GUIDE := {hwnd: 0, pos: 0, total: 0, page: 0}     ; settings window: scrollable Shortcuts page
+global EGG := {hwnd: 0, ctrl: 0, p: 0, last: 0, dt: 40, cols: [], drawn: false}   ; the portal easter egg (EggTick)
 ; Remote desktop / VM windows: a scroll message sent to them never reaches the remote PC
 ; (they only forward real input), so Shift + wheel is passed through untouched. Run the
 ; script on the remote PC as well to get fast scroll there.
@@ -1231,6 +1232,7 @@ ShowSettings(*) {
     Muted(g.AddText("x642 y466 w190", "Fixes it or tells us."))
     for rcol in PanelSince(g, rightMk)
         Anchor(rcol, "x")
+    EggAdd(g)                                            ; (a surprise in the gap when the window is wide)
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1283,6 +1285,7 @@ ShowSettings(*) {
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
         PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
+        EggCheck()
         ScrollPlace(guideSb)
         if TITLED.Has(gg.Hwnd)                          ; maximise / restore picture
             for tbtn in TITLED[gg.Hwnd].btns
@@ -2676,6 +2679,196 @@ RepaintLayered(winHwnd) {
         if DllCall("GetAncestor", "ptr", h, "uint", 2, "ptr") = root && DllCall("IsWindowVisible", "ptr", h)
             DllCall("RedrawWindow", "ptr", h, "ptr", 0, "ptr", 0, "uint", 0x0585)
     }
+}
+
+; =============================================================================
+;  Easter egg: the portal
+; =============================================================================
+; Make the settings window wide enough and, on the General page, a line of light grows in the
+; gap between the two columns, splits in two and opens like a portal. Behind it falls code rain
+; in Claude orange, with Claude Code's little mascot dancing and "Made by Claude with love"
+; under it. Narrow the window again and the portal closes.
+EGG_MIN_W() => 220                                       ; how wide the gap must be (96-dpi units)
+
+; The portal's picture, in the gap between the General page's columns (no width until the
+; window is wider than at the start).
+EggAdd(g) {
+    c := g.AddText("x430 y58 w20 h480 +0xD", "")
+    EGG.hwnd := c.Hwnd, EGG.ctrl := c, EGG.p := 0, EGG.last := 0, EGG.cols := []
+    EggClear(true)
+    return Anchor(c, "whg")
+}
+
+; Window resized: start the portal once the gap is wide enough (EggTick stops itself).
+EggCheck() {
+    if EGG.hwnd && EggWide()
+        SetTimer(EggTick, 40)
+}
+
+EggWide() {
+    try {
+        if !DllCall("IsWindow", "ptr", EGG.hwnd)
+            return false
+        EGG.ctrl.GetPos(, , &w)
+        return w / (A_ScreenDPI / 96) >= EGG_MIN_W()
+    }
+    return false
+}
+
+; Nothing drawn: a clear 1 x 1 picture (the page colour shows through).
+EggClear(force := false) {
+    if !force && !EGG.drawn
+        return
+    try SetBitmap(EGG.ctrl, Gp_Done(Gp_Canvas(1, 1, "000000", true)))
+    EGG.drawn := false
+}
+
+EggTick() {
+    if !EGG.hwnd || !DllCall("IsWindow", "ptr", EGG.hwnd) {      ; the settings window closed
+        SetTimer(EggTick, 0)
+        EGG.hwnd := 0, EGG.ctrl := 0, EGG.last := 0
+        return
+    }
+    wide := EggWide()
+    root := DllCall("GetAncestor", "ptr", EGG.hwnd, "uint", 2, "ptr")
+    if !DllCall("IsWindowVisible", "ptr", EGG.hwnd) || DllCall("IsIconic", "ptr", root) {
+        if EGG.p > 0                                    ; another page: it opens again on return
+            EGG.p := 0, EggClear()
+        EGG.last := 0
+        if !wide
+            SetTimer(EggTick, 0)
+        return
+    }
+    now := A_TickCount
+    EGG.dt := EGG.last ? Min(100, now - EGG.last) : 40
+    EGG.last := now
+    EGG.p := wide ? Min(1, EGG.p + EGG.dt / 1400) : Max(0, EGG.p - EGG.dt / 450)
+    if EGG.p <= 0 {
+        EggClear()
+        SetTimer(EggTick, 0), EGG.last := 0
+        return
+    }
+    try EggDraw(now)
+}
+
+EggDraw(now) {
+    c := EGG.ctrl, k := A_ScreenDPI / 96
+    c.GetPos(, , &pw, &ph)
+    if pw < 2 || ph < 2
+        return
+    W := pw / k, H := ph / k
+    cv := Gp_Canvas(pw, ph, "000000", true)
+    p := EGG.p
+    grow := Min(1, p / 0.25)                            ; 1: a line grows from the middle
+    open := p <= 0.25 ? 0 : 1 - (1 - (p - 0.25) / 0.75) ** 3     ; 2: it splits and opens (eased)
+    mid := W / 2, half := (W / 2 - 6) * open
+    lx := mid - half, rx := mid + half
+    if open > 0 {
+        DllCall("gdiplus\GdipSetClipRect", "ptr", cv.gr, "float", lx * k, "float", 0, "float", (rx - lx) * k, "float", ph, "int", 0)
+        EggFill(cv, lx, 0, rx - lx, H, 0xFF0D0907)
+        EggRain(cv, W, H)
+        EggMascot(cv, W, H, now)
+        DllCall("gdiplus\GdipResetClip", "ptr", cv.gr)
+    }
+    lh := H * grow, ly := (H - lh) / 2                  ; the edges of the opening glow
+    for x in (open > 0 ? [lx, rx] : [mid]) {
+        EggFill(cv, x - 5, ly, 10, lh, 0x28D97757)
+        EggFill(cv, x - 2.5, ly, 5, lh, 0x60D97757)
+        EggFill(cv, x - 1, ly, 2, lh, 0xFFFFE1D2)
+    }
+    SetBitmap(c, Gp_Done(cv))
+    EGG.drawn := true
+}
+
+; A filled rectangle in an ARGB colour (96-dpi units).
+EggFill(cv, x, y, w, h, argb) {
+    k := cv.k, br := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", argb, "ptr*", &br)
+    DllCall("gdiplus\GdipFillRectangle", "ptr", cv.gr, "ptr", br, "float", x * k, "float", y * k, "float", w * k, "float", h * k)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+}
+
+; Code rain: columns of characters falling at their own speed, a bright head and an orange
+; tail that fades out; now and then a character changes.
+EggRain(cv, W, H) {
+    static glyphs := "0123456789ABCDEF<>{}[]/\=+*:;$#%&@"
+    k := cv.k, cw := 14, chH := 16
+    n := Max(1, Floor(W / cw))
+    if EGG.cols.Length != n {
+        EGG.cols := []
+        Loop n {
+            ch := []
+            Loop 24
+                ch.Push(SubStr(glyphs, Random(1, StrLen(glyphs)), 1))
+            EGG.cols.Push({y: Random(-H, H), v: Random(6, 14) / 10, len: Random(8, 18), ch: ch})
+        }
+    }
+    fam := 0, font := 0, fmt := 0
+    DllCall("gdiplus\GdipCreateFontFamilyFromName", "str", "Consolas", "ptr", 0, "ptr*", &fam)
+    DllCall("gdiplus\GdipCreateFont", "ptr", fam, "float", 13 * k, "int", 1, "int", 2, "ptr*", &font)
+    DllCall("gdiplus\GdipCreateStringFormat", "int", 0, "int", 0, "ptr*", &fmt)
+    DllCall("gdiplus\GdipSetStringFormatAlign", "ptr", fmt, "int", 1)
+    DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", cv.gr, "int", 4)
+    brs := []
+    for argb in [0xFFFFE9DE, 0xF0E8896A, 0xC8D97757, 0x96D97757, 0x64D97757, 0x3CD97757, 0x1ED97757] {
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "uint", argb, "ptr*", &br)
+        brs.Push(br)
+    }
+    rc := Buffer(16, 0)
+    x0 := (W - n * cw) / 2
+    for i, col in EGG.cols {
+        col.y += col.v * EGG.dt * 0.12
+        if col.y - col.len * chH > H
+            col.y := Random(-80, 0), col.v := Random(6, 14) / 10, col.len := Random(8, 18)
+        if Random(1, 5) = 1
+            col.ch[Random(1, col.ch.Length)] := SubStr(glyphs, Random(1, StrLen(glyphs)), 1)
+        head := Floor(col.y / chH)
+        Loop col.len {
+            j := A_Index - 1, row := head - j, y := row * chH
+            if y < -chH || y > H
+                continue
+            lvl := j = 0 ? 1 : Min(brs.Length, 2 + Floor((j - 1) * (brs.Length - 1) / col.len))
+            NumPut("float", (x0 + (i - 1) * cw) * k, "float", y * k, "float", cw * k, "float", chH * k, rc)
+            DllCall("gdiplus\GdipDrawString", "ptr", cv.gr, "str", col.ch[Mod(Mod(row, 24) + 24, 24) + 1], "int", 1
+                , "ptr", font, "ptr", rc, "ptr", fmt, "ptr", brs[lvl])
+        }
+    }
+    for br in brs
+        DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+    DllCall("gdiplus\GdipDeleteStringFormat", "ptr", fmt)
+    DllCall("gdiplus\GdipDeleteFont", "ptr", font)
+    DllCall("gdiplus\GdipDeleteFontFamily", "ptr", fam)
+}
+
+; Claude Code's mascot in pixels, on a dark plate: it hops, sways, steps and waves, and blinks
+; now and then. Under it: "Made by Claude with love".
+EggMascot(cv, W, H, now) {
+    static body := ["000111111111111000"                ; 1 = orange; the gaps in row 2 are its eyes
+                  , "000110111111011000"
+                  , "000111111111111000"
+                  , "000111111111111000"]
+    t := now / 1000, px := 8, py := 12, org := "D97757"
+    pw := Min(W - 24, 260), pH := 4 * py + 2 * py + 64
+    plX := (W - pw) / 2, plY := H / 2 - pH / 2 - 10
+    Gp_Round(cv, plX, plY, pw, pH, 14, "0D0907")
+    sway := Sin(t * 3) * Min(16, (pw - 18 * px) / 2 - 4)
+    hop := -Abs(Sin(t * 6)) * 8
+    x0 := (W - 18 * px) / 2 + sway, y0 := plY + 18 + hop
+    blink := Mod(now, 3400) < 150
+    for r, line in body
+        Loop Parse line
+            if A_LoopField = "1" || (blink && r = 2 && (A_Index = 6 || A_Index = 13))
+                Gp_Rect(cv, x0 + (A_Index - 1) * px, y0 + (r - 1) * py, px + 0.5, py + 0.5, org)
+    wave := Mod(Floor(t * 4), 2)                        ; arms: one up, one down, then swap
+    Gp_Rect(cv, x0 + 1 * px, y0 + (2 - (wave ? 0.5 : 0)) * py, 2 * px + 0.5, py * 0.5 + 0.5, org)
+    Gp_Rect(cv, x0 + 15 * px, y0 + (2 - (wave ? 0 : 0.5)) * py, 2 * px + 0.5, py * 0.5 + 0.5, org)
+    step := Mod(Floor(t * 6), 2)                        ; legs: the pairs step in turn
+    for i, col in [4, 6, 11, 13] {
+        lift := (i = 1 || i = 3) = (step = 1) ? 0.35 : 0
+        Gp_Rect(cv, x0 + col * px, y0 + 4 * py, px + 0.5, py * (0.6 - lift) + 0.5, org)
+    }
+    Gp_Text(cv, "Made by Claude with love", plX, plY + pH - 46, pw, 22, "F2B9A0", 14, true)
 }
 
 ; A thin line from the end of a label's text to the box it belongs to (x2: the box's left edge,

@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.2.0
+;@Ahk2Exe-SetVersion 2.2.1
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.2.0"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.2.1"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -273,8 +273,14 @@ SetupCapsLock() {
 }
 
 ; Keys that can hold the Media Control layer: [AutoHotkey name, shown name].
-TRIGGERS() => [["CapsLock", "Caps Lock"], ["RAlt", "Right Alt"], ["RCtrl", "Right Ctrl"]
-             , ["AppsKey", "Menu key"], ["ScrollLock", "Scroll Lock"]]
+; Alt and Ctrl keep their normal use (Alt + Tab, Ctrl + C...) when held as the trigger; only
+; their combinations with the mouse buttons below are taken. No Shift (Shift + wheel is
+; fast scroll) and no Win key (releasing it could open the Start menu). With Left Ctrl as the
+; trigger, Ctrl + wheel (zoom) and Ctrl + Shift + wheel (side scroll) may be taken by the Media Control
+; layer while the left Ctrl is held; the right Ctrl still does them.
+TRIGGERS() => [["CapsLock", "Caps Lock"], ["LAlt", "Left Alt"], ["RAlt", "Right Alt"]
+             , ["LCtrl", "Left Ctrl"], ["RCtrl", "Right Ctrl"], ["AppsKey", "Menu key"]
+             , ["ScrollLock", "Scroll Lock"], ["Insert", "Insert"], ["Pause", "Pause"]]
 
 TriggerName(key) {
     for t in TRIGGERS()
@@ -1092,7 +1098,7 @@ ShowSettings(*) {
     Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
     pSideScroll := PanelSince(g, mk)
 
-    ; Media Control on the right; the space to its right is where its menus open.
+    ; Media Control on the right, out to the page's right edge (its menus open below the boxes).
     mk := PanelMark(g)
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
@@ -1104,13 +1110,13 @@ ShowSettings(*) {
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
             trigSel := i
-    trigDd := DropBtn(g, "x460 y82 w178", trigNames, trigSel)
+    trigDd := DropBtn(g, "x460 y82 w370", trigNames, trigSel)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
         y := 116 + (i - 1) * 32
         g.AddText("x345 y" (y + 4) " w110", row[2])
-        capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
+        capsEd[row[1]] := KeyBox(g, "x460 y" y " w342", u.caps.%row[1]%, true)   ; × ends at 830
     }
     pMedia := PanelSince(g, mk)
 
@@ -1146,7 +1152,7 @@ ShowSettings(*) {
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
     fsHeld  := AddSlideRow("Glide: Shift held",     200, u.fs.glideHeld, 0, 100)
     fsRel   := AddSlideRow("Glide: Shift released", 232, u.fs.glideRelease, 0, 100)
-    fsReset := AddBtn(g, "x565 y96 w90", "Reset")             ; back to the default speeds
+    fsReset := Anchor(AddBtn(g, "x740 y96 w90", "Reset"), "x")   ; back to the default speeds
     fsReset.OnEvent("Click", (*) => (SetSlide(fsBoost, 30), SetSlide(fsMax, 400), SetSlide(fsHeld, 60), SetSlide(fsRel, 3)))
     SecHeader(g, "x20 y288 w400", "Excluded apps")
     exLv := NewList(g, "x20 y318 w470 h210", ["App"], "h")
@@ -1345,11 +1351,13 @@ ShowSettings(*) {
             SetTimer(RepaintLayered.Bind(g.Hwnd), -30)
     }
 
-    ; A slider with its number: label, bar, value.
+    ; A slider with its number: label, bar, value. The bar fills the row; the number sits at the
+    ; right edge, and both follow the window when it is made wider.
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
-        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value))))
-        vt := PillBox(g, 565, y + 2, 60, 24, sl.Value)            ; type a value
+        sl := Anchor(g.AddSlider("x225 y" y " w535 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value)))), "w")
+        vt := PillBox(g, 770, y + 2, 60, 24, sl.Value)            ; type a value
+        Anchor(vt.pill, "x"), Anchor(vt, "x")
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
@@ -3416,9 +3424,9 @@ DropBtnMenu(b, *) {
     items := []
     for i, name in b.items
         items.Push({text: name, fn: DropBtnPick.Bind(b, i), check: i = b.sel})
-    rc := Buffer(16)                                           ; opens beside the drop-down (right side), top aligned
+    rc := Buffer(16)                                           ; opens below the drop-down, at its right end
     DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
-    PopMenu(b, items, NumGet(rc, 8, "int") + Round(8 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
+    PopMenu(b, items, NumGet(rc, 8, "int") - Round(176 * A_ScreenDPI / 96), NumGet(rc, 12, "int") + Round(4 * A_ScreenDPI / 96))
 }
 
 ; A menu in the app's own style (Windows' menus can't be rounded or coloured to match): a small
@@ -4458,9 +4466,9 @@ KeyBoxMenu(b, *) {
         items.Push("-")
     }
     items.Push({text: "(none)", fn: KeyBoxSetter(b, ""), check: cur = ""})
-    rc := Buffer(16)                                           ; beside the box and its × (right side)
+    rc := Buffer(16)                                           ; below the box, at its right end (by the ×)
     DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
-    PopMenu(b, items, NumGet(rc, 8, "int") + Round(36 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
+    PopMenu(b, items, NumGet(rc, 8, "int") - Round(176 * A_ScreenDPI / 96), NumGet(rc, 12, "int") + Round(4 * A_ScreenDPI / 96))
 }
 
 KeyBoxSetter(b, keys) => (*) => SetKeyBox(b, keys)

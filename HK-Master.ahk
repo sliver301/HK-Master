@@ -2776,8 +2776,35 @@ EggDraw(now) {
         EggFill(cv, x - 2.5, ly, 5, lh, 0x60D97757)
         EggFill(cv, x - 1, ly, 2, lh, 0xFFFFE1D2)
     }
-    SetBitmap(c, Gp_Done(cv))
+    EggPaint(c.Hwnd, Gp_Done(cv), pw, ph)
     EGG.drawn := true
+}
+
+; Shows a frame without flicker. SetBitmap repaints through PicDrawItem, which fills the
+; window colour on screen and then blends the picture on top: two steps, so every frame
+; flashed. Here both steps happen in memory and the result is copied to the screen at once.
+; The picture is still kept in PICBMP, for when Windows repaints the control itself.
+EggPaint(h, hbm, pw, ph) {
+    if PICBMP.Has(h)
+        DllCall("DeleteObject", "ptr", PICBMP[h])
+    PICBMP[h] := hbm
+    c := Integer("0x" ThemeColors().bg)
+    hdc := DllCall("GetDC", "ptr", h, "ptr")
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    buf := DllCall("CreateCompatibleBitmap", "ptr", hdc, "int", pw, "int", ph, "ptr")
+    ob := DllCall("SelectObject", "ptr", mdc, "ptr", buf, "ptr")
+    rc := Buffer(16, 0), NumPut("int", pw, rc, 8), NumPut("int", ph, rc, 12)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", mdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    sdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    os := DllCall("SelectObject", "ptr", sdc, "ptr", hbm, "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", mdc, "int", 0, "int", 0, "int", pw, "int", ph
+        , "ptr", sdc, "int", 0, "int", 0, "int", pw, "int", ph, "uint", 0x01FF0000)    ; AC_SRC_ALPHA
+    DllCall("SelectObject", "ptr", sdc, "ptr", os), DllCall("DeleteDC", "ptr", sdc)
+    DllCall("BitBlt", "ptr", hdc, "int", 0, "int", 0, "int", pw, "int", ph, "ptr", mdc, "int", 0, "int", 0, "uint", 0x00CC0020)   ; SRCCOPY
+    DllCall("SelectObject", "ptr", mdc, "ptr", ob), DllCall("DeleteObject", "ptr", buf), DllCall("DeleteDC", "ptr", mdc)
+    DllCall("ReleaseDC", "ptr", h, "ptr", hdc)
 }
 
 ; A filled rectangle in an ARGB colour (96-dpi units).

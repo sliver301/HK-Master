@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.2.0
+;@Ahk2Exe-SetVersion 2.2.1
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.2.0"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.2.1"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -135,6 +135,7 @@ global PENDING := 0          ; settings kept while the window is rebuilt for a n
 global REOPEN := 0           ; page / position / size to restore after that
 global BASE_SIG := ""        ; settings window: the saved settings, to tell when something changed
 global GUIDE := {hwnd: 0, pos: 0, total: 0, page: 0}     ; settings window: scrollable Shortcuts page
+global EGG := {hwnd: 0, ctrl: 0, p: 0, last: 0, dt: 40, cols: [], drawn: false}   ; the portal easter egg (EggTick)
 ; Remote desktop / VM windows: a scroll message sent to them never reaches the remote PC
 ; (they only forward real input), so Shift + wheel is passed through untouched. Run the
 ; script on the remote PC as well to get fast scroll there.
@@ -273,8 +274,14 @@ SetupCapsLock() {
 }
 
 ; Keys that can hold the Media Control layer: [AutoHotkey name, shown name].
-TRIGGERS() => [["CapsLock", "Caps Lock"], ["RAlt", "Right Alt"], ["RCtrl", "Right Ctrl"]
-             , ["AppsKey", "Menu key"], ["ScrollLock", "Scroll Lock"]]
+; Alt and Ctrl keep their normal use (Alt + Tab, Ctrl + C...) when held as the trigger; only
+; their combinations with the mouse buttons below are taken. No Shift (Shift + wheel is
+; fast scroll) and no Win key (releasing it could open the Start menu). With Left Ctrl as the
+; trigger, Ctrl + wheel (zoom) and Ctrl + Shift + wheel (side scroll) may be taken by the Media Control
+; layer while the left Ctrl is held; the right Ctrl still does them.
+TRIGGERS() => [["CapsLock", "Caps Lock"], ["LAlt", "Left Alt"], ["RAlt", "Right Alt"]
+             , ["LCtrl", "Left Ctrl"], ["RCtrl", "Right Ctrl"], ["AppsKey", "Menu key"]
+             , ["ScrollLock", "Scroll Lock"], ["Insert", "Insert"], ["Pause", "Pause"]]
 
 TriggerName(key) {
     for t in TRIGGERS()
@@ -1092,11 +1099,12 @@ ShowSettings(*) {
     Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
     pSideScroll := PanelSince(g, mk)
 
-    ; Media Control on the right; the space to its right is where its menus open.
+    ; Media Control on the right. Its boxes sit at the page's right edge and follow it when the
+    ; window is made wider; a thin line joins each label to its box (its menus open below the boxes).
     mk := PanelMark(g)
     SecHeader(g, "x345 y58 w110", "Media Control")
     capsEn := AddCheck(g, 460, 59, u.caps.enabled, "", 1, () => PanelState(pMedia, capsEn.Value))
-    g.AddText("x345 y88 w110", "Hold")
+    holdLbl := g.AddText("x345 y88", "Hold")
     trigNames := []
     for t in TRIGGERS()
         trigNames.Push(t[2])
@@ -1104,13 +1112,16 @@ ShowSettings(*) {
     for i, t in TRIGGERS()
         if t[1] = u.caps.trigger
             trigSel := i
-    trigDd := DropBtn(g, "x460 y82 w178", trigNames, trigSel)
+    trigDd := Anchor(DropBtn(g, "x460 y82 w370", trigNames, trigSel), "x")
+    LeaderLine(g, holdLbl, 460)
     capsEd := Map()
     for i, row in [["wheelUp", "Wheel up"], ["wheelDown", "Wheel down"], ["mButton", "Middle click"]
                  , ["xButton2", "Forward button"], ["xButton1", "Back button"]] {
         y := 116 + (i - 1) * 32
-        g.AddText("x345 y" (y + 4) " w110", row[2])
-        capsEd[row[1]] := KeyBox(g, "x460 y" y " w150", u.caps.%row[1]%, true)
+        rowLbl := g.AddText("x345 y" (y + 4), row[2])
+        kb := capsEd[row[1]] := KeyBox(g, "x460 y" y " w342", u.caps.%row[1]%, true)   ; × ends at 830
+        Anchor(kb, "x"), Anchor(kb.clr, "x")
+        LeaderLine(g, rowLbl, 460)
     }
     pMedia := PanelSince(g, mk)
 
@@ -1146,15 +1157,17 @@ ShowSettings(*) {
     fsMax   := AddSlideRow("Top speed",             168, u.fs.max, 50, 800)
     fsHeld  := AddSlideRow("Glide: Shift held",     200, u.fs.glideHeld, 0, 100)
     fsRel   := AddSlideRow("Glide: Shift released", 232, u.fs.glideRelease, 0, 100)
-    fsReset := AddBtn(g, "x565 y96 w90", "Reset")             ; back to the default speeds
+    fsReset := Anchor(AddBtn(g, "x740 y96 w90", "Reset"), "x")   ; back to the default speeds
     fsReset.OnEvent("Click", (*) => (SetSlide(fsBoost, 30), SetSlide(fsMax, 400), SetSlide(fsHeld, 60), SetSlide(fsRel, 3)))
     SecHeader(g, "x20 y288 w400", "Excluded apps")
-    exLv := NewList(g, "x20 y318 w470 h210", ["App"], "h")
-    aBtn1 := AddBtn(g, "x506 y318 w130", "Add app...")
-    aBtn2 := AddBtn(g, "x506 y354 w130", "Remove")
+    ; The list takes the extra width when the window is made wider; the buttons and notes keep
+    ; their size and stay at the right edge.
+    exLv := NewList(g, "x20 y318 w470 h210", ["App"], "wh")
+    aBtn1 := Anchor(AddBtn(g, "x506 y318 w130", "Add app..."), "x")
+    aBtn2 := Anchor(AddBtn(g, "x506 y354 w130", "Remove"), "x")
     aBtn1.OnEvent("Click", (*) => ChooseApp(g, AddExclude)), aBtn2.OnEvent("Click", (*) => DelExclude())
-    Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps."))
-    Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically."))
+    Anchor(Muted(g.AddText("x506 y398 w300", "No fast scroll in these apps.")), "x")
+    Anchor(Muted(g.AddText("x506 y420 w300", "Revit and CAD canvases are skipped automatically.")), "x")
     RefreshEx()
     pFast := PanelSince(g, mk)
     EndPage(4)
@@ -1193,6 +1206,9 @@ ShowSettings(*) {
     AddBtn(g, "x+8 w120", "Import...").OnEvent("Click", (*) => ImportSettings(g))
     Muted(g.AddText("x272 y466 w170", "All your settings."))
 
+    ; The right column (Updates ... Help) keeps its size and stays at the right edge when the
+    ; window is made wider (all its controls are anchored "x" below).
+    rightMk := PanelMark(g)
     SecHeader(g, "x460 y58 w370", "Updates")
     UPD_LABEL := g.AddText("x460 y92 w370", UpdateStatusText())
     autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
@@ -1214,6 +1230,9 @@ ShowSettings(*) {
     SecHeader(g, "x460 y430 w370", "Help")
     AddBtn(g, "x460 y460 w170", "Report a problem...").OnEvent("Click", (*) => ReportProblem(DropExclude))
     Muted(g.AddText("x642 y466 w190", "Fixes it or tells us."))
+    for rcol in PanelSince(g, rightMk)
+        Anchor(rcol, "x")
+    EggAdd(g)                                            ; (a surprise in the gap when the window is wide)
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1261,10 +1280,12 @@ ShowSettings(*) {
                 continue
             DllCall("SetWindowPos", "ptr", hw, "ptr", 0
                 , "int", Round((a.x + (InStr(a.f, "x") ? dw : 0)) * k), "int", Round((a.y + (InStr(a.f, "y") ? dh : 0)) * k)
-                , "int", Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k), "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
+                , "int", InStr(a.f, "g") && dw <= 0 ? 0 : Round((a.w + (InStr(a.f, "w") ? dw : 0)) * k)   ; g: only once wider
+                , "int", Round((a.h + (InStr(a.f, "h") ? dh : 0)) * k)
                 , "uint", 0x14)                         ; NOZORDER | NOACTIVATE
         }
         PlaceGuide(guideWin, 10, 48 + TB_H, 830 + dw, 498 + dh)
+        EggCheck()
         ScrollPlace(guideSb)
         if TITLED.Has(gg.Hwnd)                          ; maximise / restore picture
             for tbtn in TITLED[gg.Hwnd].btns
@@ -1345,11 +1366,13 @@ ShowSettings(*) {
             SetTimer(RepaintLayered.Bind(g.Hwnd), -30)
     }
 
-    ; A slider with its number: label, bar, value.
+    ; A slider with its number: label, bar, value. The bar fills the row; the number sits at the
+    ; right edge, and both follow the window when it is made wider.
     AddSlideRow(label, y, value, lo, hi) {
         g.AddText("x20 y" (y + 4) " w200", label)
-        sl := g.AddSlider("x225 y" y " w330 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value))))
-        vt := PillBox(g, 565, y + 2, 60, 24, sl.Value)            ; type a value
+        sl := Anchor(g.AddSlider("x225 y" y " w535 h28 Range" lo "-" hi " ToolTip NoTicks", Min(hi, Max(lo, Round(value)))), "w")
+        vt := PillBox(g, 770, y + 2, 60, 24, sl.Value)            ; type a value
+        Anchor(vt.pill, "x"), Anchor(vt, "x")
         sl.OnEvent("Change", (c, *) => (vt.Text != c.Value ? vt.Text := c.Value : 0))
         vt.OnEvent("Change", (e, *) => SlideTyped(sl, e, lo, hi, false))
         vt.OnEvent("LoseFocus", (e, *) => SlideTyped(sl, e, lo, hi, true))
@@ -1677,6 +1700,7 @@ ShortcutGuide(g) {
     Tip(c, "⚙️", "Ctrl + Alt + H", "Open settings")
 
     c := col[2]
+    rightMk := PanelMark(sg)                           ; the right column follows the right edge (PlaceGuide)
     if cfg.caps.enabled {
         Header(c, "Media Control")
         tn := TriggerName(cfg.caps.trigger)
@@ -1687,6 +1711,11 @@ ShortcutGuide(g) {
     Header(c, "Text shortcuts")
     for snip in cfg.snippets    ; one line each: "@@   your.email@mail.com"
         Tip(c, "⌨️", snip.trigger, StrReplace(StrReplace(snip.text, "`r"), "`n", " "))
+    GUIDE.right := []                                  ; [hwnd, x in pixels at the original width]
+    for gctl in PanelSince(sg, rightMk) {
+        gctl.GetPos(&gx)
+        GUIDE.right.Push([gctl.Hwnd, gx])
+    }
 
     ; Content height in screen pixels (controls are placed in 96-dpi units and scaled).
     GUIDE.total := Round((Max(col[1].y, col[2].y) + 4) * A_ScreenDPI / 96)
@@ -1771,6 +1800,18 @@ PlaceGuide(sg, x, y, w, h) {
         , "int", Round(w * s), "int", Round(h * s), "uint", 0x10)   ; on top, NOACTIVATE
     DllCall("ShowWindow", "ptr", sg.Hwnd, "int", 8)    ; SW_SHOWNA
     GUIDE.page := Round(h * s)
+    ; The right column moves right by however much wider than 830 the guide is (kept at its
+    ; scrolled height).
+    if GUIDE.HasOwnProp("right") {
+        dx := Round(Max(0, w - 830) * s)
+        rc := Buffer(16)
+        for r in GUIDE.right {
+            DllCall("GetWindowRect", "ptr", r[1], "ptr", rc)
+            DllCall("MapWindowPoints", "ptr", 0, "ptr", sg.Hwnd, "ptr", rc, "uint", 2)
+            DllCall("SetWindowPos", "ptr", r[1], "ptr", 0, "int", r[2] + dx, "int", NumGet(rc, 4, "int")
+                , "int", 0, "int", 0, "uint", 0x15)    ; NOSIZE | NOZORDER | NOACTIVATE
+        }
+    }
     GuideScrollBar()
     static hooked := false
     if !hooked {
@@ -2640,8 +2681,237 @@ RepaintLayered(winHwnd) {
     }
 }
 
+; =============================================================================
+;  Easter egg: the portal
+; =============================================================================
+; Make the settings window wide enough and, on the General page, a line of light grows in the
+; gap between the two columns, splits in two and opens like a portal. Behind it falls code rain
+; in Claude orange, with Claude Code's little mascot dancing and "Made by Claude with love"
+; under it. Narrow the window again and the portal closes.
+EGG_MIN_W() => 220                                       ; how wide the gap must be (96-dpi units)
+
+; The portal's picture, in the gap between the General page's columns (no width until the
+; window is wider than at the start).
+EggAdd(g) {
+    c := g.AddText("x430 y58 w20 h480 +0xD", "")
+    EGG.hwnd := c.Hwnd, EGG.ctrl := c, EGG.p := 0, EGG.last := 0, EGG.cols := []
+    EggClear(true)
+    return Anchor(c, "whg")
+}
+
+; Window resized: start the portal once the gap is wide enough (EggTick stops itself).
+EggCheck() {
+    if EGG.hwnd && EggWide()
+        SetTimer(EggTick, 40)
+}
+
+EggWide() {
+    try {
+        if !DllCall("IsWindow", "ptr", EGG.hwnd)
+            return false
+        EGG.ctrl.GetPos(, , &w)
+        return w / (A_ScreenDPI / 96) >= EGG_MIN_W()
+    }
+    return false
+}
+
+; Nothing drawn: a clear 1 x 1 picture (the page colour shows through).
+EggClear(force := false) {
+    if !force && !EGG.drawn
+        return
+    try SetBitmap(EGG.ctrl, Gp_Done(Gp_Canvas(1, 1, "000000", true)))
+    EGG.drawn := false
+}
+
+EggTick() {
+    if !EGG.hwnd || !DllCall("IsWindow", "ptr", EGG.hwnd) {      ; the settings window closed
+        SetTimer(EggTick, 0)
+        EGG.hwnd := 0, EGG.ctrl := 0, EGG.last := 0
+        return
+    }
+    wide := EggWide()
+    root := DllCall("GetAncestor", "ptr", EGG.hwnd, "uint", 2, "ptr")
+    if !DllCall("IsWindowVisible", "ptr", EGG.hwnd) || DllCall("IsIconic", "ptr", root) {
+        if EGG.p > 0                                    ; another page: it opens again on return
+            EGG.p := 0, EggClear()
+        EGG.last := 0
+        if !wide
+            SetTimer(EggTick, 0)
+        return
+    }
+    now := A_TickCount
+    EGG.dt := EGG.last ? Min(100, now - EGG.last) : 40
+    EGG.last := now
+    EGG.p := wide ? Min(1, EGG.p + EGG.dt / 1400) : Max(0, EGG.p - EGG.dt / 450)
+    if EGG.p <= 0 {
+        EggClear()
+        SetTimer(EggTick, 0), EGG.last := 0
+        return
+    }
+    try EggDraw(now)
+}
+
+EggDraw(now) {
+    c := EGG.ctrl, k := A_ScreenDPI / 96
+    c.GetPos(, , &pw, &ph)
+    if pw < 2 || ph < 2
+        return
+    W := pw / k, H := ph / k
+    cv := Gp_Canvas(pw, ph, "000000", true)
+    p := EGG.p
+    grow := Min(1, p / 0.25)                            ; 1: a line grows from the middle
+    open := p <= 0.25 ? 0 : 1 - (1 - (p - 0.25) / 0.75) ** 3     ; 2: it splits and opens (eased)
+    mid := W / 2, half := (W / 2 - 6) * open
+    lx := mid - half, rx := mid + half
+    if open > 0 {
+        DllCall("gdiplus\GdipSetClipRect", "ptr", cv.gr, "float", lx * k, "float", 0, "float", (rx - lx) * k, "float", ph, "int", 0)
+        EggFill(cv, lx, 0, rx - lx, H, 0xFF0D0907)
+        EggRain(cv, W, H)
+        EggMascot(cv, W, H, now)
+        DllCall("gdiplus\GdipResetClip", "ptr", cv.gr)
+    }
+    lh := H * grow, ly := (H - lh) / 2                  ; the edges of the opening glow
+    for x in (open > 0 ? [lx, rx] : [mid]) {
+        EggFill(cv, x - 5, ly, 10, lh, 0x28D97757)
+        EggFill(cv, x - 2.5, ly, 5, lh, 0x60D97757)
+        EggFill(cv, x - 1, ly, 2, lh, 0xFFFFE1D2)
+    }
+    EggPaint(c.Hwnd, Gp_Done(cv), pw, ph)
+    EGG.drawn := true
+}
+
+; Shows a frame without flicker. SetBitmap repaints through PicDrawItem, which fills the
+; window colour on screen and then blends the picture on top: two steps, so every frame
+; flashed. Here both steps happen in memory and the result is copied to the screen at once.
+; The picture is still kept in PICBMP, for when Windows repaints the control itself.
+EggPaint(h, hbm, pw, ph) {
+    if PICBMP.Has(h)
+        DllCall("DeleteObject", "ptr", PICBMP[h])
+    PICBMP[h] := hbm
+    c := Integer("0x" ThemeColors().bg)
+    hdc := DllCall("GetDC", "ptr", h, "ptr")
+    mdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    buf := DllCall("CreateCompatibleBitmap", "ptr", hdc, "int", pw, "int", ph, "ptr")
+    ob := DllCall("SelectObject", "ptr", mdc, "ptr", buf, "ptr")
+    rc := Buffer(16, 0), NumPut("int", pw, rc, 8), NumPut("int", ph, rc, 12)
+    br := DllCall("CreateSolidBrush", "uint", ((c & 0xFF) << 16) | (c & 0xFF00) | (c >> 16), "ptr")
+    DllCall("FillRect", "ptr", mdc, "ptr", rc, "ptr", br)
+    DllCall("DeleteObject", "ptr", br)
+    sdc := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+    os := DllCall("SelectObject", "ptr", sdc, "ptr", hbm, "ptr")
+    DllCall("msimg32\AlphaBlend", "ptr", mdc, "int", 0, "int", 0, "int", pw, "int", ph
+        , "ptr", sdc, "int", 0, "int", 0, "int", pw, "int", ph, "uint", 0x01FF0000)    ; AC_SRC_ALPHA
+    DllCall("SelectObject", "ptr", sdc, "ptr", os), DllCall("DeleteDC", "ptr", sdc)
+    DllCall("BitBlt", "ptr", hdc, "int", 0, "int", 0, "int", pw, "int", ph, "ptr", mdc, "int", 0, "int", 0, "uint", 0x00CC0020)   ; SRCCOPY
+    DllCall("SelectObject", "ptr", mdc, "ptr", ob), DllCall("DeleteObject", "ptr", buf), DllCall("DeleteDC", "ptr", mdc)
+    DllCall("ReleaseDC", "ptr", h, "ptr", hdc)
+}
+
+; A filled rectangle in an ARGB colour (96-dpi units).
+EggFill(cv, x, y, w, h, argb) {
+    k := cv.k, br := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "uint", argb, "ptr*", &br)
+    DllCall("gdiplus\GdipFillRectangle", "ptr", cv.gr, "ptr", br, "float", x * k, "float", y * k, "float", w * k, "float", h * k)
+    DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+}
+
+; Code rain: columns of characters falling at their own speed, a bright head and an orange
+; tail that fades out; now and then a character changes.
+EggRain(cv, W, H) {
+    static glyphs := "0123456789ABCDEF<>{}[]/\=+*:;$#%&@"
+    k := cv.k, cw := 14, chH := 16
+    n := Max(1, Floor(W / cw))
+    if EGG.cols.Length != n {
+        EGG.cols := []
+        Loop n {
+            ch := []
+            Loop 24
+                ch.Push(SubStr(glyphs, Random(1, StrLen(glyphs)), 1))
+            EGG.cols.Push({y: Random(-H, H), v: Random(6, 14) / 10, len: Random(8, 18), ch: ch})
+        }
+    }
+    fam := 0, font := 0, fmt := 0
+    DllCall("gdiplus\GdipCreateFontFamilyFromName", "str", "Consolas", "ptr", 0, "ptr*", &fam)
+    DllCall("gdiplus\GdipCreateFont", "ptr", fam, "float", 13 * k, "int", 1, "int", 2, "ptr*", &font)
+    DllCall("gdiplus\GdipCreateStringFormat", "int", 0, "int", 0, "ptr*", &fmt)
+    DllCall("gdiplus\GdipSetStringFormatAlign", "ptr", fmt, "int", 1)
+    DllCall("gdiplus\GdipSetTextRenderingHint", "ptr", cv.gr, "int", 4)
+    brs := []
+    for argb in [0xFFFFE9DE, 0xF0E8896A, 0xC8D97757, 0x96D97757, 0x64D97757, 0x3CD97757, 0x1ED97757] {
+        br := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "uint", argb, "ptr*", &br)
+        brs.Push(br)
+    }
+    rc := Buffer(16, 0)
+    x0 := (W - n * cw) / 2
+    for i, col in EGG.cols {
+        col.y += col.v * EGG.dt * 0.12
+        if col.y - col.len * chH > H
+            col.y := Random(-80, 0), col.v := Random(6, 14) / 10, col.len := Random(8, 18)
+        if Random(1, 5) = 1
+            col.ch[Random(1, col.ch.Length)] := SubStr(glyphs, Random(1, StrLen(glyphs)), 1)
+        head := Floor(col.y / chH)
+        Loop col.len {
+            j := A_Index - 1, row := head - j, y := row * chH
+            if y < -chH || y > H
+                continue
+            lvl := j = 0 ? 1 : Min(brs.Length, 2 + Floor((j - 1) * (brs.Length - 1) / col.len))
+            NumPut("float", (x0 + (i - 1) * cw) * k, "float", y * k, "float", cw * k, "float", chH * k, rc)
+            DllCall("gdiplus\GdipDrawString", "ptr", cv.gr, "str", col.ch[Mod(Mod(row, 24) + 24, 24) + 1], "int", 1
+                , "ptr", font, "ptr", rc, "ptr", fmt, "ptr", brs[lvl])
+        }
+    }
+    for br in brs
+        DllCall("gdiplus\GdipDeleteBrush", "ptr", br)
+    DllCall("gdiplus\GdipDeleteStringFormat", "ptr", fmt)
+    DllCall("gdiplus\GdipDeleteFont", "ptr", font)
+    DllCall("gdiplus\GdipDeleteFontFamily", "ptr", fam)
+}
+
+; Claude Code's mascot in pixels, on a dark plate: it hops, sways, steps and waves, and blinks
+; now and then. Under it: "Made by Claude with love".
+EggMascot(cv, W, H, now) {
+    static body := ["000111111111111000"                ; 1 = orange; the gaps in row 2 are its eyes
+                  , "000110111111011000"
+                  , "000111111111111000"
+                  , "000111111111111000"]
+    t := now / 1000, px := 8, py := 12, org := "D97757"
+    pw := Min(W - 24, 260), pH := 4 * py + 2 * py + 64
+    plX := (W - pw) / 2, plY := H / 2 - pH / 2 - 10
+    Gp_Round(cv, plX, plY, pw, pH, 14, "0D0907")
+    sway := Sin(t * 3) * Min(16, (pw - 18 * px) / 2 - 4)
+    hop := -Abs(Sin(t * 6)) * 8
+    x0 := (W - 18 * px) / 2 + sway, y0 := plY + 18 + hop
+    blink := Mod(now, 3400) < 150
+    for r, line in body
+        Loop Parse line
+            if A_LoopField = "1" || (blink && r = 2 && (A_Index = 6 || A_Index = 13))
+                Gp_Rect(cv, x0 + (A_Index - 1) * px, y0 + (r - 1) * py, px + 0.5, py + 0.5, org)
+    wave := Mod(Floor(t * 4), 2)                        ; arms: one up, one down, then swap
+    Gp_Rect(cv, x0 + 1 * px, y0 + (2 - (wave ? 0.5 : 0)) * py, 2 * px + 0.5, py * 0.5 + 0.5, org)
+    Gp_Rect(cv, x0 + 15 * px, y0 + (2 - (wave ? 0 : 0.5)) * py, 2 * px + 0.5, py * 0.5 + 0.5, org)
+    step := Mod(Floor(t * 6), 2)                        ; legs: the pairs step in turn
+    for i, col in [4, 6, 11, 13] {
+        lift := (i = 1 || i = 3) = (step = 1) ? 0.35 : 0
+        Gp_Rect(cv, x0 + col * px, y0 + 4 * py, px + 0.5, py * (0.6 - lift) + 0.5, org)
+    }
+    Gp_Text(cv, "Made by Claude with love", plX, plY + pH - 46, pw, 22, "F2B9A0", 14, true)
+}
+
+; A thin line from the end of a label's text to the box it belongs to (x2: the box's left edge,
+; 96-dpi units). Only shown once the window is made wider than its original size ("g": no width
+; until then); it grows as the box moves right.
+LeaderLine(win, lbl, x2) {
+    k := A_ScreenDPI / 96
+    lbl.GetPos(&lx, &ly, &lw, &lh)
+    x1 := Round((lx + lw) / k) + 8, y := Round((ly + lh / 2) / k)
+    ln := Anchor(win.AddText("x" x1 " y" y " w" Max(1, x2 - 8 - x1) " h1"), "wg")
+    ln.role := "line"
+    return ln
+}
+
 ; Remember a control's start position and how it follows a window resize
-; (flags: x / y = move, w / h = grow).
+; (flags: x / y = move, w / h = grow, g = no width until the window is wider than at the start).
 Anchor(ctrl, flags) {
     ctrl.GetPos(&x, &y, &w, &h)
     k := A_ScreenDPI / 96
@@ -3416,9 +3686,9 @@ DropBtnMenu(b, *) {
     items := []
     for i, name in b.items
         items.Push({text: name, fn: DropBtnPick.Bind(b, i), check: i = b.sel})
-    rc := Buffer(16)                                           ; opens beside the drop-down (right side), top aligned
+    rc := Buffer(16)                                           ; opens below the drop-down, at its right end
     DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
-    PopMenu(b, items, NumGet(rc, 8, "int") + Round(8 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
+    PopMenu(b, items, NumGet(rc, 8, "int") - Round(176 * A_ScreenDPI / 96), NumGet(rc, 12, "int") + Round(4 * A_ScreenDPI / 96))
 }
 
 ; A menu in the app's own style (Windows' menus can't be rounded or coloured to match): a small
@@ -4436,7 +4706,8 @@ KeyBox(owner, opts, value, withMenu := false) {
     b := AddBtn(owner, opts, PrettyKeys(value))
     KEYBOX_VALUES[b.Hwnd] := value
     b.OnEvent("Click", withMenu ? KeyBoxMenu : RecordKeys)
-    AddBtn(owner, "x+2 yp w26", "×").OnEvent("Click", (*) => SetKeyBox(b, ""))
+    b.clr := AddBtn(owner, "x+2 yp w26", "×")
+    b.clr.OnEvent("Click", (*) => SetKeyBox(b, ""))
     return b
 }
 
@@ -4458,9 +4729,9 @@ KeyBoxMenu(b, *) {
         items.Push("-")
     }
     items.Push({text: "(none)", fn: KeyBoxSetter(b, ""), check: cur = ""})
-    rc := Buffer(16)                                           ; beside the box and its × (right side)
+    rc := Buffer(16)                                           ; below the box, at its right end (by the ×)
     DllCall("GetWindowRect", "ptr", b.Hwnd, "ptr", rc)
-    PopMenu(b, items, NumGet(rc, 8, "int") + Round(36 * A_ScreenDPI / 96), NumGet(rc, 4, "int"))
+    PopMenu(b, items, NumGet(rc, 8, "int") - Round(176 * A_ScreenDPI / 96), NumGet(rc, 12, "int") + Round(4 * A_ScreenDPI / 96))
 }
 
 KeyBoxSetter(b, keys) => (*) => SetKeyBox(b, keys)

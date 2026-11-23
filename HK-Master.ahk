@@ -1205,6 +1205,9 @@ ShowSettings(*) {
     AddBtn(g, "x+8 w120", "Import...").OnEvent("Click", (*) => ImportSettings(g))
     Muted(g.AddText("x272 y466 w170", "All your settings."))
 
+    ; The right column (Updates ... Help) keeps its size and stays at the right edge when the
+    ; window is made wider (all its controls are anchored "x" below).
+    rightMk := PanelMark(g)
     SecHeader(g, "x460 y58 w370", "Updates")
     UPD_LABEL := g.AddText("x460 y92 w370", UpdateStatusText())
     autoUpd := AddCheck(g, 460, 120, IniRead(INI, "General", "AutoUpdate", 1) = 1, "Check for updates automatically", 340
@@ -1226,6 +1229,8 @@ ShowSettings(*) {
     SecHeader(g, "x460 y430 w370", "Help")
     AddBtn(g, "x460 y460 w170", "Report a problem...").OnEvent("Click", (*) => ReportProblem(DropExclude))
     Muted(g.AddText("x642 y466 w190", "Fixes it or tells us."))
+    for rcol in PanelSince(g, rightMk)
+        Anchor(rcol, "x")
     EndPage(5)
 
     ; ---- Bottom buttons (all pages) ---------------------------------------------
@@ -1692,6 +1697,7 @@ ShortcutGuide(g) {
     Tip(c, "⚙️", "Ctrl + Alt + H", "Open settings")
 
     c := col[2]
+    rightMk := PanelMark(sg)                           ; the right column follows the right edge (PlaceGuide)
     if cfg.caps.enabled {
         Header(c, "Media Control")
         tn := TriggerName(cfg.caps.trigger)
@@ -1702,6 +1708,11 @@ ShortcutGuide(g) {
     Header(c, "Text shortcuts")
     for snip in cfg.snippets    ; one line each: "@@   your.email@mail.com"
         Tip(c, "⌨️", snip.trigger, StrReplace(StrReplace(snip.text, "`r"), "`n", " "))
+    GUIDE.right := []                                  ; [hwnd, x in pixels at the original width]
+    for gctl in PanelSince(sg, rightMk) {
+        gctl.GetPos(&gx)
+        GUIDE.right.Push([gctl.Hwnd, gx])
+    }
 
     ; Content height in screen pixels (controls are placed in 96-dpi units and scaled).
     GUIDE.total := Round((Max(col[1].y, col[2].y) + 4) * A_ScreenDPI / 96)
@@ -1786,6 +1797,18 @@ PlaceGuide(sg, x, y, w, h) {
         , "int", Round(w * s), "int", Round(h * s), "uint", 0x10)   ; on top, NOACTIVATE
     DllCall("ShowWindow", "ptr", sg.Hwnd, "int", 8)    ; SW_SHOWNA
     GUIDE.page := Round(h * s)
+    ; The right column moves right by however much wider than 830 the guide is (kept at its
+    ; scrolled height).
+    if GUIDE.HasOwnProp("right") {
+        dx := Round(Max(0, w - 830) * s)
+        rc := Buffer(16)
+        for r in GUIDE.right {
+            DllCall("GetWindowRect", "ptr", r[1], "ptr", rc)
+            DllCall("MapWindowPoints", "ptr", 0, "ptr", sg.Hwnd, "ptr", rc, "uint", 2)
+            DllCall("SetWindowPos", "ptr", r[1], "ptr", 0, "int", r[2] + dx, "int", NumGet(rc, 4, "int")
+                , "int", 0, "int", 0, "uint", 0x15)    ; NOSIZE | NOZORDER | NOACTIVATE
+        }
+    }
     GuideScrollBar()
     static hooked := false
     if !hooked {

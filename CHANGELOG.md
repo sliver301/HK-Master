@@ -7,6 +7,7 @@
 
 **Changed**
 - Mouse & keys: the Media Control boxes now reach the right edge of the page and move with it when the window is made wider, with a thin line joining each label to its box (shown only once the window is wider than its original size). Their menus open below the box instead of beside it.
+- Shortcuts and General: when the window is made wider, the right-hand column moves to the right edge.
 - Fast scroll: the speed sliders fill the row, with the numbers and Reset at the right edge. When the window is made wider, the sliders and the Excluded apps list get longer, while the list's buttons and notes keep their size at the right edge.
 
 ## 2.2.0

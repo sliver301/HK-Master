@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.2
+
+**New**
+- Start key (Mouse & keys): **Shift + Win** switches the left Win key off and on again, for games or to stop the Start menu popping up. While it is off, **Caps Lock + Win** works as a normal Win press for that one time. Either order works (Win + Shift, Win + Caps Lock too). Both keys can be changed (Shift, Ctrl, Alt or Caps Lock), and the whole thing can be switched off. The Win key is on every time the app starts.
+
 ## 2.2.1
 
 **New**

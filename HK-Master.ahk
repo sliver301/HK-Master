@@ -8,7 +8,7 @@
 ; Icons for the compiled exe: the app icon, plus both tray icons embedded as resources 300/301.
 ;@Ahk2Exe-SetName HK-Master
 ;@Ahk2Exe-SetDescription HK-Master
-;@Ahk2Exe-SetVersion 2.2.1
+;@Ahk2Exe-SetVersion 2.2.2
 ;@Ahk2Exe-ExeName HK-Master
 ;@Ahk2Exe-SetMainIcon icons\app.ico
 ;@Ahk2Exe-AddResource icons\tray-white.ico, 300
@@ -31,7 +31,7 @@ global DATA_DIR := INSTALL_DIR
 global INI := DATA_DIR "\HK-Master.ini"
 global RUN_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 global UNINSTALL_KEY := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\" APP_NAME
-global APP_VERSION := "2.2.1"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
+global APP_VERSION := "2.2.2"                 ; keep equal to ;@Ahk2Exe-SetVersion and the GitHub release tag
 ; Updates come from the GitHub releases of the public repo (the release needs an attached HK-Master*.exe).
 global REPO_URL := "https://github.com/sliver301/HK-Master"
 global RELEASES_URL := "https://github.com/sliver301/HK-Master/releases/latest"
@@ -135,6 +135,7 @@ global PENDING := 0          ; settings kept while the window is rebuilt for a n
 global REOPEN := 0           ; page / position / size to restore after that
 global BASE_SIG := ""        ; settings window: the saved settings, to tell when something changed
 global GUIDE := {hwnd: 0, pos: 0, total: 0, page: 0}     ; settings window: scrollable Shortcuts page
+global WIN_OFF := false        ; Start key (left Win) switched off (StartKeyToggle); on again at every start
 global EGG := {hwnd: 0, ctrl: 0, p: 0, last: 0, dt: 40, cols: [], drawn: false}   ; the portal easter egg (EggTick)
 ; Remote desktop / VM windows: a scroll message sent to them never reaches the remote PC
 ; (they only forward real input), so Shift + wheel is passed through untouched. Run the
@@ -160,6 +161,7 @@ if A_IsCompiled && !InstalledHere() && !RELOADED && !STARTUP_MODE
 ApplyAppMode()
 
 SetupCapsLock()
+SetupStartKey()
 SetupTray()
 OnMessage(0x20A, SliderWheel)          ; WM_MOUSEWHEEL
 RegisterHotstrings()
@@ -229,6 +231,18 @@ XButton2::FileDlgNav(1)       ; Forward
 ~*MButton::FS_Stop()
 #HotIf
 
+; ---- Start key (left Win) switched off --------------------------------------------
+; The key does nothing, alone or with other keys (no Start menu, no Win + E...), except with
+; the on / off or the "once" key held (checked here too, whichever hotkey Windows reports first).
+#HotIf WIN_OFF && cfg.win.enabled
+*LWin::StartKeyBlocked()
+*LWin up::return
+; Start key on: Win works as usual (~), and is watched for the on / off key pressed after it
+; (Win + Shift switches too, not only Shift + Win).
+#HotIf !WIN_OFF && cfg.win.enabled
+~LWin::StartKeyWatch()
+#HotIf
+
 ; =============================================================================
 ;  Text shortcuts
 ; =============================================================================
@@ -249,8 +263,112 @@ ReapplySettings(old) {
     if old.caps.enabled
         for key in ["WheelUp", "WheelDown", "MButton", "XButton2", "XButton1"]
             try Hotkey(old.caps.trigger " & " key, "Off")
+    if old.win.enabled {
+        try Hotkey(StartKeyHotkey(old.win.toggle), "Off")
+        try Hotkey(StartKeyHotkey(old.win.once), "Off")
+    }
     SetupCapsLock()
+    SetupStartKey()
     RegisterHotstrings()
+}
+
+; =============================================================================
+;  Start key (left Win)
+; =============================================================================
+; Two shortcuts, each a key + the left Win key, in either order (keys chosen in Mouse & keys):
+;  - on / off (default Shift + Win or Win + Shift): switches the Start key off and on again.
+;    It starts on.
+;  - once (default Caps Lock + Win or Win + Caps Lock): while it is off, the Win key works for
+;    that one press.
+; Both pass the Win key on while it is held, so Win + Shift + S and other Win shortcuts still
+; work when they start with that key; only Win pressed and let go alone switches.
+START_MODS() => [["Shift", "Shift"], ["Ctrl", "Ctrl"], ["Alt", "Alt"], ["CapsLock", "Caps Lock"]]
+
+StartModName(key) {
+    for m in START_MODS()
+        if m[1] = key
+            return m[2]
+    return key
+}
+
+StartKeyHotkey(mod) => mod = "Shift" ? "+LWin" : mod = "Ctrl" ? "^LWin" : mod = "Alt" ? "!LWin" : "CapsLock & LWin"
+
+SetupStartKey() {
+    global WIN_OFF
+    if !cfg.win.enabled {
+        WIN_OFF := false
+        return
+    }
+    try Hotkey(StartKeyHotkey(cfg.win.toggle), StartKeyToggle, "On")
+    try Hotkey(StartKeyHotkey(cfg.win.once), StartKeyOnce, "On")
+}
+
+; On / off: Win is passed on while held. Let go with no other key pressed meanwhile: switch
+; (and vkE8, a key that does nothing, stops the Start menu from opening for that press).
+StartKeyToggle(*) {
+    global WIN_OFF
+    Send("{Blind}{LWin down}")
+    KeyWait("LWin")
+    if A_PriorKey = "LWin" {
+        Send("{Blind}{vkE8}{LWin up}")
+        StartKeySwitch()
+    } else
+        Send("{Blind}{LWin up}")
+}
+
+StartKeySwitch() {
+    global WIN_OFF
+    WIN_OFF := !WIN_OFF
+    ToolTip(WIN_OFF ? "Start key off" : "Start key on")
+    SetTimer(() => ToolTip(), -1200)
+}
+
+; The last key pressed (A_PriorKey, real keys only) was the given Shift / Ctrl / Alt / Caps Lock.
+StartModIsPrior(mod) {
+    k := A_PriorKey
+    return mod = "Shift" ? (k = "LShift" || k = "RShift") : mod = "Ctrl" ? (k = "LControl" || k = "RControl")
+         : mod = "Alt" ? (k = "LAlt" || k = "RAlt") : k = mod
+}
+
+; Win pressed alone while the Start key is on (it already went through). If the on / off key
+; is pressed while Win is held, vkE8 (a key that does nothing) keeps the Start menu shut; let go
+; with that key as the last one pressed: off. Anything else (Win + Shift + S...) is left alone.
+StartKeyWatch() {
+    mask := false
+    while GetKeyState("LWin", "P") {
+        if !mask && GetKeyState(cfg.win.toggle, "P")
+            Send("{Blind}{vkE8}"), mask := true
+        Sleep(15)
+    }
+    if mask && StartModIsPrior(cfg.win.toggle)
+        StartKeySwitch()
+}
+
+; Win pressed while the Start key is off: only the on / off and "once" shortcuts get through,
+; in either order. Win first: the "once" key pressed while Win is held lets Win through from
+; then on; let go with the on / off key as the last one pressed: on again.
+StartKeyBlocked() {
+    if GetKeyState(cfg.win.toggle, "P")             ; (Shift / Ctrl / Alt: either side; CapsLock)
+        return StartKeyToggle()
+    if GetKeyState(cfg.win.once, "P")
+        return StartKeyOnce()
+    sent := false
+    while GetKeyState("LWin", "P") {
+        if !sent && GetKeyState(cfg.win.once, "P")
+            Send("{Blind}{LWin down}"), sent := true
+        Sleep(15)
+    }
+    if sent
+        Send("{Blind}{LWin up}")
+    else if StartModIsPrior(cfg.win.toggle)
+        StartKeySwitch()
+}
+
+; Once: the Win key works as usual for this press, even while it is switched off.
+StartKeyOnce(*) {
+    Send("{Blind}{LWin down}")
+    KeyWait("LWin")
+    Send("{Blind}{LWin up}")
 }
 
 ; =============================================================================
@@ -814,7 +932,7 @@ Esc(s) => StrReplace(StrReplace(StrReplace(StrReplace(s, "\", "\\"), "`r`n", "`n
 Unesc(s) => StrReplace(StrReplace(StrReplace(s, "\\", Chr(1)), "\n", "`n"), Chr(1), "\")
 
 LoadConfig() {
-    c := {snippets: [], caps: {}, side: {}, fs: {}}
+    c := {snippets: [], caps: {}, side: {}, fs: {}, win: {}}
 
     n := Rd("Snippets", "Count", "")
     if IsInteger(n) {
@@ -838,6 +956,16 @@ LoadConfig() {
         c.accent := "windows"
     else if !RegExMatch(c.accent, "^[0-9A-F]{6}$")             ; (also the colour names of a 2.2.0 test build)
         c.accent := "0090FF"
+    c.win.enabled := Rd("StartKey", "Enabled", 1) = 1
+    c.win.toggle := "Shift", c.win.once := "CapsLock"
+    for m in START_MODS() {
+        if m[1] = Rd("StartKey", "Toggle", "Shift")
+            c.win.toggle := m[1]
+        if m[1] = Rd("StartKey", "Once", "CapsLock")
+            c.win.once := m[1]
+    }
+    if c.win.toggle = c.win.once                     ; one key can't do both
+        c.win.toggle := "Shift", c.win.once := "CapsLock"
     c.caps.enabled   := Rd("CapsLock", "Enabled", 1) = 1
     c.caps.shiftToggle := Rd("CapsLock", "ShiftToggle", 1) = 1
     c.caps.trigger   := "CapsLock"
@@ -949,6 +1077,9 @@ SaveConfig(c) {
         IniWrite(Esc(s.text), INI, "Snippets", i "_Text")
     }
 
+    IniWrite(c.win.enabled ? 1 : 0, INI, "StartKey", "Enabled")
+    IniWrite(c.win.toggle, INI, "StartKey", "Toggle")
+    IniWrite(c.win.once, INI, "StartKey", "Once")
     IniWrite(c.caps.enabled ? 1 : 0, INI, "CapsLock", "Enabled")
     IniWrite(c.caps.shiftToggle ? 1 : 0, INI, "CapsLock", "ShiftToggle")
     IniWrite(c.caps.trigger, INI, "CapsLock", "Trigger")
@@ -1089,15 +1220,40 @@ ShowSettings(*) {
     ; greyed out and doesn't respond (PanelState). PanelMark / PanelSince collect its controls;
     ; the switch itself stays as it is.
     shiftEn := AddCheck(g, 135, 59, u.caps.shiftToggle, "", 1, () => PanelState(pShift, shiftEn.Value))
-    Muted(g.AddText("x20 y88 w300", "Shift + Caps Lock turns it on / off."))
-    Muted(g.AddText("x20 y110 w300", "Caps Lock alone does nothing."))
+    Muted(g.AddText("x20 y84 w300", "Shift + Caps Lock turns it on / off."))
+    Muted(g.AddText("x20 y104 w300", "Caps Lock alone does nothing."))
     pShift := PanelSince(g, mk)
 
     mk := PanelMark(g)
-    SecHeader(g, "x20 y170 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
-    fsH := AddCheck(g, 135, 171, u.fs.hscroll, "", 1, () => PanelState(pSideScroll, fsH.Value))
-    Muted(g.AddText("x20 y196 w300", "Ctrl + Shift + wheel scrolls sideways."))
+    SecHeader(g, "x20 y134 w110", "Side scroll")              ; (its own switch; saved with fast scroll)
+    fsH := AddCheck(g, 135, 135, u.fs.hscroll, "", 1, () => PanelState(pSideScroll, fsH.Value))
+    Muted(g.AddText("x20 y160 w300", "Ctrl + Shift + wheel scrolls sideways."))
     pSideScroll := PanelSince(g, mk)
+
+    ; Start key (left Win): the key held with Win to switch it off / on, and to use it once
+    ; while it is off. The two can't be the same key: picking the other's key swaps them.
+    mk := PanelMark(g)
+    SecHeader(g, "x20 y192 w110", "Start key")
+    winEn := AddCheck(g, 135, 193, u.win.enabled, "", 1, () => PanelState(pWin, winEn.Value))
+    modNames := []
+    for m in START_MODS()
+        modNames.Push(m[2])
+    winTogSel := 1, winOnceSel := 4
+    for i, m in START_MODS() {
+        if m[1] = u.win.toggle
+            winTogSel := i
+        if m[1] = u.win.once
+            winOnceSel := i
+    }
+    g.AddText("x20 y224 w110", "Off / on")
+    winTog := DropBtn(g, "x135 y218 w120", modNames, winTogSel)
+    Muted(g.AddText("x263 y224 w60", "+ Win"))
+    g.AddText("x20 y256 w110", "Once, while off")
+    winOnce := DropBtn(g, "x135 y250 w120", modNames, winOnceSel)
+    Muted(g.AddText("x263 y256 w60", "+ Win"))
+    winTog.onPick := (b, old) => (winOnce.sel = b.sel ? (winOnce.sel := old, winOnce.Text := winOnce.items[old]) : 0)
+    winOnce.onPick := (b, old) => (winTog.sel = b.sel ? (winTog.sel := old, winTog.Text := winTog.items[old]) : 0)
+    pWin := PanelSince(g, mk)
 
     ; Media Control on the right. Its boxes sit at the page's right edge and follow it when the
     ; window is made wider; a thin line joins each label to its box (its menus open below the boxes).
@@ -1126,18 +1282,18 @@ ShowSettings(*) {
     pMedia := PanelSince(g, mk)
 
     ; A line across the page; Side buttons below it: the mouse on the left, the apps on the right.
-    sepMk := Anchor(g.AddText("x20 y280 w810 h1"), "w"), sepMk.role := "line"
+    sepMk := Anchor(g.AddText("x20 y288 w810 h1"), "w"), sepMk.role := "line"
     mk := PanelMark(g)
-    SecHeader(g, "x20 y292 w110", "Side buttons")
-    sideEn := AddCheck(g, 135, 293, u.side.enabled, "", 1, () => PanelState(pSide, sideEn.Value))
-    Muted(g.AddText("x20 y318 w300", "Not in dialogs or File Explorer."))
-    MouseArt(g, 20, 338)
+    SecHeader(g, "x20 y300 w110", "Side buttons")
+    sideEn := AddCheck(g, 135, 301, u.side.enabled, "", 1, () => PanelState(pSide, sideEn.Value))
+    Muted(g.AddText("x20 y326 w300", "Not in dialogs or File Explorer."))
+    MouseArt(g, 20, 346)
 
     sides := []
     for e in u.side.list
         sides.Push({app: e.app, back: e.back, fwd: e.fwd, both: e.both})
-    LvHeader(g, 345, 292, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
-    sideLv := NewList(g, "x345 y318 w485 h172", ["App", "Back", "Forward", "Both"], "wh")
+    LvHeader(g, 345, 300, 485, [["App", 150], ["Back", 110], ["Forward", 120], ["Both", 100]])
+    sideLv := NewList(g, "x345 y326 w485 h164", ["App", "Back", "Forward", "Both"], "wh")
     sideLv.off := false                                        ; true while Side buttons is switched off
     sBtn1 := AddBtn(g, "x345 y500 w90", "Add...")
     sBtn2 := AddBtn(g, "x+8 w90", "Edit...")
@@ -1442,7 +1598,7 @@ ShowSettings(*) {
 
     ; Each section greyed out or not, by its switch.
     Panels() {
-        PanelState(pShift, shiftEn.Value), PanelState(pSideScroll, fsH.Value), PanelState(pMedia, capsEn.Value)
+        PanelState(pShift, shiftEn.Value), PanelState(pSideScroll, fsH.Value), PanelState(pMedia, capsEn.Value), PanelState(pWin, winEn.Value)
         PanelState(pSide, sideEn.Value), PanelState(pFast, fsEn.Value)
     }
 
@@ -1603,11 +1759,14 @@ ShowSettings(*) {
 
     ; Everything currently shown in the window, as a settings object (nothing is saved here).
     BuildConfig() {
-        c := {snippets: snips, caps: {}, side: {}, fs: {}}
+        c := {snippets: snips, caps: {}, side: {}, fs: {}, win: {}}
         c.theme := cfg.theme
         c.glass := cfg.glass
         c.accent := cfg.accent
         c.start := startEn.Value
+        c.win.enabled := winEn.Value
+        c.win.toggle := START_MODS()[Max(1, winTog.sel)][1]
+        c.win.once := START_MODS()[Max(1, winOnce.sel)][1]
         c.caps.enabled := capsEn.Value
         c.caps.shiftToggle := shiftEn.Value
         c.caps.trigger := TRIGGERS()[Max(1, trigDd.sel)][1]
@@ -1658,7 +1817,7 @@ ShowSettings(*) {
 ; Everything Apply saves, as one string (theme and Start with Windows apply at once, so they
 ; are left out). Two equal strings = nothing changed.
 ConfigSig(c) {
-    s := c.caps.enabled "|" c.caps.shiftToggle "|" c.caps.trigger
+    s := c.caps.enabled "|" c.caps.shiftToggle "|" c.caps.trigger "|" c.win.enabled "|" c.win.toggle "|" c.win.once
     for k in ["wheelUp", "wheelDown", "mButton", "xButton2", "xButton1"]
         s .= "|" c.caps.%k%
     for x in c.snippets
@@ -1697,6 +1856,10 @@ ShortcutGuide(g) {
     Header(c, "General")
     if cfg.caps.shiftToggle
         Tip(c, "🔠", "Shift + Caps Lock", "Caps Lock on / off")
+    if cfg.win.enabled {
+        Tip(c, "🔒", StartModName(cfg.win.toggle) " + Win", "Start key off / on")
+        Tip(c, "🔓", StartModName(cfg.win.once) " + Win", "Start key once, while off")
+    }
     Tip(c, "⚙️", "Ctrl + Alt + H", "Open settings")
 
     c := col[2]
@@ -3776,8 +3939,11 @@ MenuItemDraw(b, hot := false) {
 }
 
 DropBtnPick(b, i, *) {
+    old := b.sel
     b.sel := i
     b.Text := b.items[i]
+    if b.HasOwnProp("onPick")                                  ; (old: the item chosen before)
+        b.onPick.Call(b, old)
 }
 
 BtnDisable(b) {

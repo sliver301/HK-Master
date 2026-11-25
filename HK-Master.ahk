@@ -237,6 +237,10 @@ XButton2::FileDlgNav(1)       ; Forward
 #HotIf WIN_OFF && cfg.win.enabled
 *LWin::StartKeyBlocked()
 *LWin up::return
+; Start key on: Win works as usual (~), and is watched for the on / off key pressed after it
+; (Win + Shift switches too, not only Shift + Win).
+#HotIf !WIN_OFF && cfg.win.enabled
+~LWin::StartKeyWatch()
 #HotIf
 
 ; =============================================================================
@@ -271,9 +275,11 @@ ReapplySettings(old) {
 ; =============================================================================
 ;  Start key (left Win)
 ; =============================================================================
-; Two shortcuts, each a key held + the left Win key (keys chosen in Mouse & keys):
-;  - on / off (default Shift + Win): switches the Start key off and on again. It starts on.
-;  - once (default Caps Lock + Win): while it is off, the Win key works for that one press.
+; Two shortcuts, each a key + the left Win key, in either order (keys chosen in Mouse & keys):
+;  - on / off (default Shift + Win or Win + Shift): switches the Start key off and on again.
+;    It starts on.
+;  - once (default Caps Lock + Win or Win + Caps Lock): while it is off, the Win key works for
+;    that one press.
 ; Both pass the Win key on while it is held, so Win + Shift + S and other Win shortcuts still
 ; work when they start with that key; only Win pressed and let go alone switches.
 START_MODS() => [["Shift", "Shift"], ["Ctrl", "Ctrl"], ["Alt", "Alt"], ["CapsLock", "Caps Lock"]]
@@ -305,19 +311,57 @@ StartKeyToggle(*) {
     KeyWait("LWin")
     if A_PriorKey = "LWin" {
         Send("{Blind}{vkE8}{LWin up}")
-        WIN_OFF := !WIN_OFF
-        ToolTip(WIN_OFF ? "Start key off" : "Start key on")
-        SetTimer(() => ToolTip(), -1200)
+        StartKeySwitch()
     } else
         Send("{Blind}{LWin up}")
 }
 
-; Win pressed while the Start key is off: only the on / off and "once" shortcuts get through.
+StartKeySwitch() {
+    global WIN_OFF
+    WIN_OFF := !WIN_OFF
+    ToolTip(WIN_OFF ? "Start key off" : "Start key on")
+    SetTimer(() => ToolTip(), -1200)
+}
+
+; The last key pressed (A_PriorKey, real keys only) was the given Shift / Ctrl / Alt / Caps Lock.
+StartModIsPrior(mod) {
+    k := A_PriorKey
+    return mod = "Shift" ? (k = "LShift" || k = "RShift") : mod = "Ctrl" ? (k = "LControl" || k = "RControl")
+         : mod = "Alt" ? (k = "LAlt" || k = "RAlt") : k = mod
+}
+
+; Win pressed alone while the Start key is on (it already went through). If the on / off key
+; is pressed while Win is held, vkE8 (a key that does nothing) keeps the Start menu shut; let go
+; with that key as the last one pressed: off. Anything else (Win + Shift + S...) is left alone.
+StartKeyWatch() {
+    mask := false
+    while GetKeyState("LWin", "P") {
+        if !mask && GetKeyState(cfg.win.toggle, "P")
+            Send("{Blind}{vkE8}"), mask := true
+        Sleep(15)
+    }
+    if mask && StartModIsPrior(cfg.win.toggle)
+        StartKeySwitch()
+}
+
+; Win pressed while the Start key is off: only the on / off and "once" shortcuts get through,
+; in either order. Win first: the "once" key pressed while Win is held lets Win through from
+; then on; let go with the on / off key as the last one pressed: on again.
 StartKeyBlocked() {
     if GetKeyState(cfg.win.toggle, "P")             ; (Shift / Ctrl / Alt: either side; CapsLock)
-        StartKeyToggle()
-    else if GetKeyState(cfg.win.once, "P")
-        StartKeyOnce()
+        return StartKeyToggle()
+    if GetKeyState(cfg.win.once, "P")
+        return StartKeyOnce()
+    sent := false
+    while GetKeyState("LWin", "P") {
+        if !sent && GetKeyState(cfg.win.once, "P")
+            Send("{Blind}{LWin down}"), sent := true
+        Sleep(15)
+    }
+    if sent
+        Send("{Blind}{LWin up}")
+    else if StartModIsPrior(cfg.win.toggle)
+        StartKeySwitch()
 }
 
 ; Once: the Win key works as usual for this press, even while it is switched off.

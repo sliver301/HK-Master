@@ -37,7 +37,7 @@ Run it, choose **Install** or **Portable**, and you're done. Windows 10 / 11.
 | 🖱️ **Side buttons** | **Back = Undo**, **Forward = Redo**, **both together = Enter**, per app (Revit, AutoCAD, Office, Adobe and more). Off in dialogs and File Explorer, so nothing gets undone by accident. |
 | 📂 **Folders** | **Shift + Back** goes up one folder in File Explorer and in any app's Open/Save dialog. |
 | 🔊 **Media control** | Hold **Caps Lock** (or Left / Right Alt, Left / Right Ctrl, Menu key, Scroll Lock, Insert, Pause) + **wheel** for volume, **+ middle click** for play/pause, **+ side buttons** for next/previous track. |
-| 🔒 **Start key lock** | **Shift + Win** turns the left Win key off and on (no Start menu popping up in games). While it's off, **Caps Lock + Win** works once. Keys can be changed. |
+| 🔒 **Start key lock** | **Shift + Win** turns the left Win key off and on (no Start menu popping up in games). While it's off, **Caps Lock + Win** works once. Either order works, and the keys can be changed. |
 | 🔠 **Caps Lock guard** | Caps Lock alone does nothing; **Shift + Caps Lock** turns it on and off. No more ACCIDENTAL CAPS. |
 | 🔄 **Auto-update** | Checks GitHub at 9 AM and 9 PM (or soon after the PC wakes up, if it missed one) and updates itself in one click. You can turn it off, or check by hand, in *General › Updates*. |
 | ⌨️ **Text shortcuts** | Type a short code like `@@` and get your full email address, phone number or any text. |
